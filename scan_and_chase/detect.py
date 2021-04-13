@@ -53,7 +53,7 @@ def get_detections(scheduler, obj, logger, profiler, t_samp = 20.0):
     return t, states, _passes, _data
 
 
-def orbit_determination(data_select, scheduler, obj, rx_passes, error_cache_path, logger, profiler, Sigma_orb0=None):
+def orbit_determination(data_select, scheduler, obj, rx_passes, error_cache_path, logger, profiler, Sigma_orb0=None, snr_limit=True):
 
     #to simulate a stare and chase, we need to figure out the initial orbit determination errors
 
@@ -77,7 +77,7 @@ def orbit_determination(data_select, scheduler, obj, rx_passes, error_cache_path
             space_object=obj, 
             variables=variables, 
             deltas=deltas, 
-            snr_limit=True,
+            snr_limit=snr_limit,
             save_states=True, 
             epoch=scheduler.epoch,
         )
