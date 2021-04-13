@@ -181,7 +181,7 @@ for j in range(len(t_tracks)):
                 axes[i].legend()
         else:
             axes[i].semilogy(snr_peak, std)
-        axes[i].set_ylabel(f'std({header[i]}) [km]')
+        axes[i].set_ylabel(f'std({header[i+1]}) [km]')
         axes[i].set_xlabel('Peak SNR [dB]')
 
 
