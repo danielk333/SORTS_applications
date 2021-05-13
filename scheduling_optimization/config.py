@@ -113,8 +113,8 @@ class TrackScheduler(
                 snr_limit=False,
             )
             datas.append(data)
-
-            r_stds_tx = err.range_std(data['range'] - datas[0]['range'], data['snr'])
+            los_r = data['range'] - datas[0]['range']*0.5
+            r_stds_tx = err.range_std(los_r, data['snr'])
             v_stds_tx = err.range_rate_std(data['snr'])
 
             Sigma_m_diag_tx = np.r_[r_stds_tx**2, v_stds_tx**2]

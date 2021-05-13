@@ -18,7 +18,7 @@ def cost_function(Sigma_orb, num):
 
     pos_cost = 1#per m
     vel_cost = 100#per m/s
-    time_cost = 500#per s
+    time_cost = 100#per s
 
     time_used = num*config.tracker.t_slice
 
@@ -98,14 +98,19 @@ def grid_search_cost_function(n_steps, f_steps):
 if __name__=='__main__':
     #test_scheduling_set()
 
-    n_steps = np.array(list(range(1,10)) + [20,30,40,50,100])
+    n_steps = np.array(list(range(1,10)) + [20])
     f_steps = np.linspace(0.1,1,num=20)
 
     N, F, cost = grid_search_cost_function(n_steps, f_steps)
+    
     fig, ax = plt.subplots()
-
     c = ax.pcolormesh(N, F, cost)
     ax.set_title('Cost function')
+    fig.colorbar(c, ax=ax)
+
+    fig, ax = plt.subplots()
+    c = ax.pcolormesh(N, F, np.log10(cost))
+    ax.set_title('Log-Cost function')
     fig.colorbar(c, ax=ax)
 
     plt.show()
