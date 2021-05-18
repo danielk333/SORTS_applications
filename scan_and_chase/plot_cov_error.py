@@ -178,11 +178,14 @@ for j in range(len(t_tracks)):
         if i == 0:
             axes[i].semilogy(snr_peak, std, label=f'{len(t_tracks[j])} tracklet points')
             if j==len(t_tracks)-1:
-                axes[i].legend()
+                axes[i].legend(fontsize=16)
         else:
             axes[i].semilogy(snr_peak, std)
-        axes[i].set_ylabel(f'std({header[i+1]}) [km]')
-        axes[i].set_xlabel('Peak SNR [dB]')
+        if i > 2:
+            axes[i].set_ylabel(f'std({header[i+1]}) [km/s]', fontsize=16)
+        else:
+            axes[i].set_ylabel(f'std({header[i+1]}) [km]', fontsize=16)
+        axes[i].set_xlabel('Peak SNR [dB]', fontsize=16)
 
 
 plt.show()

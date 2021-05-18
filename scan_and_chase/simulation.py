@@ -25,7 +25,7 @@ end_hours = 10.0
 IOD_width = 5.0
 tracker_delay = 5.0
 
-update_interval = 120.0
+update_interval = 60.0
 
 # pop_trunc = slice(1,2)
 pop_trunc = None
@@ -69,7 +69,6 @@ error_cache_path = pathlib.Path('/home/danielk/IRF/IRF_GITLAB/SORTS/examples/dat
 scan = sorts.scans.Fence(azimuth=90, num=40, dwell=0.1, min_elevation=30)
 
 profiler = sorts.profiling.Profiler()
-logger = sorts.profiling.get_logger('StareAndChase')
 
 pop_kw = dict(
     propagator = sorts.propagator.SGP4,
@@ -94,6 +93,15 @@ epoch = pop.get_object(0).epoch
 
 np.random.seed(3487)
 profiler.start('total')
+
+#this is for "no track" scenario
+def data_select_all(data):
+    if len(data['t']) == 0:
+        return np.empty((0,), dtype=np.int)
+    else:
+        return np.argwhere(np.full(data['t'].shape, True, dtype=np.bool)).flatten()
+
+
 
 def data_select(data):
     #for this one we assume a time delay of IOD_width seconds after first point, all detections within that scope is used
@@ -122,11 +130,62 @@ class ScanAndChaseSim(sorts.Simulation):
 
         self.steps['calc'] = self.calc
 
+    def get_data(self, index, plot=False):
+        obj = self.pop.get_object(index)
+        ret_ = self.iterative_det_od(index, obj)
+
+        Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object, sigmas = ret_
+
+        if plot:
+            max_snr = 10*np.log10(passes[0].calculate_snr(radar.tx[0], radar.rx[0], obj.d))
+
+            fig = plt.figure(figsize=(12,8))
+            axes = np.array([
+                [
+                    fig.add_subplot(221),
+                    fig.add_subplot(222),
+                ],
+                [
+                    fig.add_subplot(223),
+                    fig.add_subplot(224),
+                ],
+            ])
+
+            axes[1][1].plot(data[0]['t']/60.0, 10*np.log10(data[0]['snr']), 'xk', alpha=1, label='Scan')
+
+            _, axes = sorts.plotting.observed_parameters([scan_and_chase_datas[0]], passes=[passes[0]], axes=axes)
+
+            axes[1][1].plot(passes[0].t/60.0, max_snr, '-g', alpha=1, label='Optimal')
+            axes[1][1].set_ylim([0.0, max_snr.max()])
+            L = axes[1][1].legend()
+            L.get_texts()[1].set_text('Observed')
+            fig.suptitle('Scan and chase')
+            fig.savefig(self.get_path(f'chase_index{index}.png'))
+
+            plt.show()
+
+        dat = {}
+        dat['Sigma_orb'] = Sigma_orb__
+        dat['scan_and_chase_datas'] = scan_and_chase_datas
+        dat['t'] = t
+        dat['states'] = states
+        dat['passes'] = passes
+        dat['data'] = data
+        dat['chase_schdeule_time'] = chase_schdeule_time
+        dat['init_object'] = init_object
+        dat['true_object'] = true_object
+        dat['sigmas'] = sigmas
+
+        for sig in sigmas:
+            print(np.sqrt(np.diag(sig)))
+
+        return dat
+
     def plot(self, index, obj, *args, **kwargs):
         data_path = self.get_path(f'calc/{index}_data.pickle').resolve()
         _data = self.load_pickle(data_path)
         if _data is not None:
-            Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object = _data
+            Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object, sigmas = _data
         else:
             return
 
@@ -184,6 +243,12 @@ class ScanAndChaseSim(sorts.Simulation):
     @sorts.pre_post_actions(post='plot')
     @sorts.cached_step(caches='pickle')
     def calc(self, index, obj, **kwargs):
+        return self.iterative_det_od(index, obj, **kwargs)
+
+
+    def iterative_det_od(self, index, obj, **kwargs):
+
+        sigmas = []
 
         print('RUNNING CALC')
 
@@ -195,14 +260,35 @@ class ScanAndChaseSim(sorts.Simulation):
             epoch = epoch,
             timeslice = 0.1, 
             end_time = 3600.0*end_hours, 
-            logger = logger,
+            logger = self.logger,
             profiler = profiler,
         )
+        self.scheduler = scheduler
 
-        t, states, passes, data = detect.get_detections(scheduler, obj, logger, profiler, t_samp = 10.0)
+        t, states, passes, data = detect.get_detections(scheduler, obj, self.logger, profiler, t_samp = 10.0)
 
         if len(data) == 0:
             return None
+
+
+        try:
+            datas_scan, Sigma_orb_scan = detect.orbit_determination(
+                data_select_all, 
+                scheduler, 
+                obj, 
+                passes, 
+                error_cache_path, 
+                self.logger, 
+                profiler,
+            )
+        except Exception as e:
+            self.logger.info('Cannot do IOD')
+            self.logger.exception(e)
+            return None
+
+        Sigma_orb_scan__ = 0.5*(Sigma_orb_scan + Sigma_orb_scan.T)
+        sigmas.append(Sigma_orb_scan__)
+
 
         try:
             datas, Sigma_orb = detect.orbit_determination(
@@ -211,7 +297,7 @@ class ScanAndChaseSim(sorts.Simulation):
                 obj, 
                 passes, 
                 error_cache_path, 
-                logger, 
+                self.logger, 
                 profiler,
             )
         except Exception as e:
@@ -220,6 +306,8 @@ class ScanAndChaseSim(sorts.Simulation):
             return None
 
         Sigma_orb__ = 0.5*(Sigma_orb + Sigma_orb.T)
+
+        sigmas.append(Sigma_orb__)
 
         t_iod = datas[0]['t'][datas[0]['data_select']]
 
@@ -269,8 +357,6 @@ class ScanAndChaseSim(sorts.Simulation):
 
         scheduler.update(init_object, start_track=chase_schdeule_time)
 
-
-
         if update_interval is not None:
             updates = np.floor((passes[0].end() - passes[0].start())/update_interval)
             for update_num in range(1,int(updates)):
@@ -292,7 +378,7 @@ class ScanAndChaseSim(sorts.Simulation):
                         obj, 
                         passes, 
                         error_cache_path, 
-                        logger, 
+                        self.logger, 
                         profiler,
                         Sigma_orb0 = Sigma_orb__,
                     )
@@ -302,6 +388,8 @@ class ScanAndChaseSim(sorts.Simulation):
                     return None
 
                 Sigma_orb__ = 0.5*(Sigma_orb + Sigma_orb.T)
+
+                sigmas.append(Sigma_orb__)
 
                 #sample OD covariance
                 update_orb = np.random.multivariate_normal(datas[0]['states'][:,0], Sigma_orb__)
@@ -338,11 +426,16 @@ class ScanAndChaseSim(sorts.Simulation):
             epoch = scheduler.epoch,
         )
 
-        return Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object.state, true_object.state
+        return Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object.state, true_object.state, sigmas
 
 
 
 arg = sys.argv[1].strip().lower()
+
+if len(sys.argv) > 2:
+    run = sys.argv[2].strip().lower()
+else:
+    run = 'run'
 
 if arg == 'full':
     sched_cls = ScanAndFullChase
@@ -364,7 +457,12 @@ if (sim.root / arg).is_dir():
 else:
     sim.branch(arg, empty=True)
 
-sim.run()
+if run == 'norun':
+    print(f'sim = {sim}')
+elif run == 'run':
+    sim.run()
+else:
+    raise Exception('No such command')
 
 profiler.stop('total')
 print('\n' + profiler.fmt(normalize='total'))
