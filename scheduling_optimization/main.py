@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import pathlib
 import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
@@ -99,9 +100,18 @@ if __name__=='__main__':
     #test_scheduling_set()
 
     n_steps = np.array(list(range(1,10)) + [20])
-    f_steps = np.linspace(0.1,1,num=20)
+    f_steps = np.linspace(0.1,1,num=10)
 
-    N, F, cost = grid_search_cost_function(n_steps, f_steps)
+    if pathlib.Path('N.npy').is_file():
+        N = np.load('N.npy')
+        F = np.load('F.npy')
+        cost = np.load('cost.npy')
+    else:
+        N, F, cost = grid_search_cost_function(n_steps, f_steps)
+        np.save('N.npy', N)
+        np.save('F.npy', F)
+        np.save('cost.npy', cost)
+
     
     fig, ax = plt.subplots()
     c = ax.pcolormesh(N, F, cost)
@@ -110,7 +120,10 @@ if __name__=='__main__':
 
     fig, ax = plt.subplots()
     c = ax.pcolormesh(N, F, np.log10(cost))
-    ax.set_title('Log-Cost function')
-    fig.colorbar(c, ax=ax)
+    ax.set_title('Log-Cost function', fontsize=16)
+    ax.set_xlabel('Number of measurement points', fontsize=16)
+    ax.set_ylabel('Fraction of pass tracked', fontsize=16)
+    cb = fig.colorbar(c, ax=ax)
+    cb.ax.set_ylabel('log10(COST)', fontsize=16)
 
     plt.show()
