@@ -24,7 +24,7 @@ pass_predict = 32000e3/LD
 
 kernel = pathlib.Path('/home/danielk/IRF/IRF_GITLAB/EPHEMERIS_FILES/de430.bsp')
 
-prop = sorts.propagator.Rebound(
+propagator_options = dict(
     kernel = kernel, 
     settings=dict(
         in_frame='HeliocentricMeanEcliptic',
@@ -70,10 +70,34 @@ orb = pyorb.Orbit(
 print('Initial orbit:')
 print(orb)
 
+obj = SpaceOject(
+    sorts.propagator.Rebound
+    propagator_options = propagator_options,
+    state = orb,
+    epoch = epoch,
+)
+
 init_state = np.squeeze(orb.cartesian)
 t = np.arange(0, 3600.0*24.0*days, dt)
 
 states, massive_states = prop.propagate(t, init_state, epoch)
+
+from schedulers import TrackingScheduler
+
+scheduler = TrackingScheduler(radar, t, states)
+
+data = scheduler.observe_passes(
+    scheduler.passes, 
+    space_object=obj, 
+    epoch=None, 
+    calculate_snr=True, 
+    doppler_spread_integrated_snr=False,
+    interpolator=None, 
+    snr_limit=True, 
+    save_states=False, 
+    vectorize=False,
+    extended_meta=True,
+)
 
 #plot results
 fig = plt.figure(figsize=(15,15))
