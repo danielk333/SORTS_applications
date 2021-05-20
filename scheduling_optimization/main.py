@@ -114,12 +114,22 @@ if __name__=='__main__':
 
     
     fig, ax = plt.subplots()
-    c = ax.pcolormesh(N, F, cost)
+    c = ax.pcolormesh(N[1:,:], F[1:,:], cost[1:,:])
+    xtickslocs = ax.get_xticks()
+    ytickslocs = ax.get_yticks()
+    ax.set_xticks(xtickslocs)
+    ax.set_xticklabels(['{x}' for x in n_steps[1:]])
     ax.set_title('Cost function')
     fig.colorbar(c, ax=ax)
 
     fig, ax = plt.subplots()
-    c = ax.pcolormesh(N, F, np.log10(cost))
+    N_ = N[1:,:]
+    N_[-1,:] = 11
+    c = ax.pcolormesh(N_, F[1:,:], np.log10(cost[1:,:]))
+
+    ax.set_xticks([x + 0.5 for x in n_steps[1:-1]] + [11])
+    ax.set_xticklabels([f'{x}' for x in n_steps[1:]])
+
     ax.set_title('Log-Cost function', fontsize=16)
     ax.set_xlabel('Number of measurement points', fontsize=16)
     ax.set_ylabel('Fraction of pass tracked', fontsize=16)
