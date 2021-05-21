@@ -3,6 +3,9 @@
 '''
 NEO detection simulation
 
+#TODO:
+Make a commandline interface using the Simulation class and create a interactable object that can be used to input any "object" and get out detection possiblities over the given time frame, can be used as a planning tool
+
 '''
 import pathlib
 import logging
@@ -17,9 +20,15 @@ import sorts
 import pyorb
 
 
+radar = sorts.radars.eiscat3d_interp
+
+for st in radar.tx + radar.rx:
+    st.min_elevation = 0
+
 dt = 3600.0
 days = 8.0
 LD = 384402e3
+t_slice = 3600.0
 pass_predict = 32000e3/LD
 
 kernel = pathlib.Path('/home/danielk/IRF/IRF_GITLAB/EPHEMERIS_FILES/de430.bsp')
@@ -34,11 +43,8 @@ propagator_options = dict(
         epoch_scale = 'tdb',
     ),
 )
-print(prop)
 
 epoch = Time('2029-04-09T00:00:00', format='isot', scale='tdb')
-print(epoch)
-print(epoch.jd)
 
 # 99942 Apophis
 # SPK ID = 2099942
@@ -70,39 +76,86 @@ orb = pyorb.Orbit(
 print('Initial orbit:')
 print(orb)
 
-obj = SpaceOject(
-    sorts.propagator.Rebound
+def H_to_D(H, pV):
+    return 10**(3.1236 - 0.5*np.log10(pV) - 0.2*H)
+
+obj = sorts.SpaceObject(
+    sorts.propagator.Rebound,
     propagator_options = propagator_options,
     state = orb,
     epoch = epoch,
+    parameters = dict(
+        H = jpl_el['H'].data[0],
+        d = H_to_D(jpl_el['H'].data[0], 0.14),
+        geometric_albedo = 0.14,
+        spin_period = (3600.0*24.0)/1e3,
+    ),
 )
+print(obj)
 
-init_state = np.squeeze(orb.cartesian)
 t = np.arange(0, 3600.0*24.0*days, dt)
 
-states, massive_states = prop.propagate(t, init_state, epoch)
+states, massive_states = obj.get_state(t)
+interpolator = sorts.interpolation.Legendre8(states, t)
 
 from schedulers import TrackingScheduler
 
-scheduler = TrackingScheduler(radar, t, states)
+scheduler = TrackingScheduler(radar, t, states, t_slice=t_slice)
+
+for tx_p in scheduler.passes:
+    for rx_p in tx_p:
+        for ps in rx_p:
+            print(ps)
 
 data = scheduler.observe_passes(
     scheduler.passes, 
     space_object=obj, 
-    epoch=None, 
-    calculate_snr=True, 
-    doppler_spread_integrated_snr=False,
-    interpolator=None, 
-    snr_limit=True, 
-    save_states=False, 
-    vectorize=False,
-    extended_meta=True,
+    epoch=epoch, 
+    doppler_spread_integrated_snr=True,
+    interpolator=interpolator, 
+    snr_limit=False,
+    extended_meta=False,
 )
 
 #plot results
 fig = plt.figure(figsize=(15,15))
+axes = [
+    fig.add_subplot(231),
+    fig.add_subplot(232),
+    fig.add_subplot(233),
+]
+sn_axes = [
+    fig.add_subplot(234),
+    fig.add_subplot(235),
+    fig.add_subplot(236),
+]
+
+fig = plt.figure(figsize=(15,15))
+r_axes = [
+    fig.add_subplot(131),
+    fig.add_subplot(132),
+    fig.add_subplot(133),
+]
+for tx_d in data:
+    for rxi, rx_d in enumerate(tx_d):
+        for dat in rx_d:
+            axes[rxi].plot(dat['tx_k'][1,:], dat['tx_k'][2,:])
+            sn_axes[rxi].plot(dat['t'] - np.min(dat['t']), 10*np.log10(dat['snr']))
+            r_axes[rxi].plot(dat['t'] - np.min(dat['t']), dat['range']*0.5/LD)
+
+
+#plot results
+fig = plt.figure(figsize=(15,15))
 ax = fig.add_subplot(111, projection='3d')
-ax.plot(states[0,:]/LD, states[1,:]/LD, states[2,:]/LD)
+ax.plot(states[0,:]/LD, states[1,:]/LD, states[2,:]/LD, 'b')
+for ctrl in scheduler.controllers:
+    for ti in range(len(ctrl.t)):
+        ax.plot(
+            [radar.tx[0].ecef[0]/LD, ctrl.ecefs[0,ti]/LD], 
+            [radar.tx[0].ecef[1]/LD, ctrl.ecefs[1,ti]/LD], 
+            [radar.tx[0].ecef[2]/LD, ctrl.ecefs[2,ti]/LD], 
+            'g',
+        )
 
 fig = plt.figure(figsize=(15,15))
 ax = fig.add_subplot(111)

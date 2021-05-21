@@ -9,9 +9,9 @@ class TrackingScheduler(
         sorts.scheduler.StaticList, 
         sorts.scheduler.ObservedParameters,
     ):
-    def __init__(self, radar, t, states, profiler=None, logger=None, **kwargs):
-        passes = radar.find_passes(t, states)
-        self.passes = sorts.passes.group_passes(passes)
+    def __init__(self, radar, t, states, track_len=3600.0, profiler=None, logger=None, **kwargs):
+        self.passes = radar.find_passes(t, states)
+        passes = sorts.passes.group_passes(self.passes)
 
         controllers = []
         for txi in range(len(passes)):
@@ -32,6 +32,7 @@ class TrackingScheduler(
                     radar = radar, 
                     t = t[inds], 
                     ecefs = states[:3, inds],
+                    dwell = track_len,
                 )
                 controllers.append(tracker)
 
