@@ -130,8 +130,8 @@ class ScanAndChaseSim(sorts.Simulation):
 
         self.steps['calc'] = self.calc
 
-    def get_data(self, index, plot=False):
-        ret_ = self.iterative_det_od(index)
+    def get_data(self, index, plot=False, no_cache=False):
+        ret_ = self.iterative_det_od(index, no_cache=no_cache)
 
         Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object, sigmas = ret_
 
@@ -225,10 +225,13 @@ class ScanAndChaseSim(sorts.Simulation):
 
 
     def iterative_det_od(self, index, **kwargs):
-        data_path = self.get_path(f'calc/{index}_data.pickle').resolve()
-        _data = self.load_pickle(data_path)
-        if _data is not None:
-            return _data
+        no_cache = kwargs.get('no_cache', False)
+
+        if not no_cache:
+            data_path = self.get_path(f'calc/{index}_data.pickle').resolve()
+            _data = self.load_pickle(data_path)
+            if _data is not None:
+                return _data
 
         obj = self.pop.get_object(index)
 
@@ -411,7 +414,8 @@ class ScanAndChaseSim(sorts.Simulation):
         )
 
         _data = Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object.state, true_object.state, sigmas
-        self.save_pickle(data_path, _data)
+        if not no_cache:
+            self.save_pickle(data_path, _data)
 
         return _data
 
@@ -446,6 +450,11 @@ else:
 
 if run == 'norun':
     print(f'sim = {sim}')
+    print(f'== COMMANDS ==')
+    print('dat = sim.get_data(index, plot=False, no_cache=False)')
+    print('sim.plot(dat)')
+    print('sim.print_sigmas(dat)')
+    print('sim.')
 elif run == 'run':
     sim.run()
 else:
