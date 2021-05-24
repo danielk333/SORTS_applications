@@ -123,7 +123,7 @@ def data_select(data):
 class ScanAndChaseSim(sorts.Simulation):
     def __init__(self, pop, sched_cls, *args, **kwargs):
         self.pop = pop
-        self.objs = [obj for obj in pop]
+        self.inds = list(range(len(pop)))
         self.sched_cls = sched_cls
 
         super().__init__(*args, **kwargs)
@@ -131,40 +131,12 @@ class ScanAndChaseSim(sorts.Simulation):
         self.steps['calc'] = self.calc
 
     def get_data(self, index, plot=False):
-        obj = self.pop.get_object(index)
-        ret_ = self.iterative_det_od(index, obj)
+        ret_ = self.iterative_det_od(index)
 
         Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object, sigmas = ret_
 
-        if plot:
-            max_snr = 10*np.log10(passes[0].calculate_snr(radar.tx[0], radar.rx[0], obj.d))
-
-            fig = plt.figure(figsize=(12,8))
-            axes = np.array([
-                [
-                    fig.add_subplot(221),
-                    fig.add_subplot(222),
-                ],
-                [
-                    fig.add_subplot(223),
-                    fig.add_subplot(224),
-                ],
-            ])
-
-            axes[1][1].plot(data[0]['t']/60.0, 10*np.log10(data[0]['snr']), 'xk', alpha=1, label='Scan')
-
-            _, axes = sorts.plotting.observed_parameters([scan_and_chase_datas[0]], passes=[passes[0]], axes=axes)
-
-            axes[1][1].plot(passes[0].t/60.0, max_snr, '-g', alpha=1, label='Optimal')
-            axes[1][1].set_ylim([0.0, max_snr.max()])
-            L = axes[1][1].legend()
-            L.get_texts()[1].set_text('Observed')
-            fig.suptitle('Scan and chase')
-            fig.savefig(self.get_path(f'chase_index{index}.png'))
-
-            plt.show()
-
         dat = {}
+        dat['index'] = index
         dat['Sigma_orb'] = Sigma_orb__
         dat['scan_and_chase_datas'] = scan_and_chase_datas
         dat['t'] = t
@@ -176,77 +148,89 @@ class ScanAndChaseSim(sorts.Simulation):
         dat['true_object'] = true_object
         dat['sigmas'] = sigmas
 
-        for sig in sigmas:
-            print(np.sqrt(np.diag(sig)))
+        if plot:
+            self.plot(dat)
 
         return dat
 
-    def plot(self, index, obj, *args, **kwargs):
-        data_path = self.get_path(f'calc/{index}_data.pickle').resolve()
-        _data = self.load_pickle(data_path)
-        if _data is not None:
-            Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object, sigmas = _data
-        else:
-            return
+    def print_sigmas(self, dat):
 
-        print('RUNNING PLOT')
-
-        print(obj)
-
-        print(f'\nLinear orbit estimator covariance [SI-units] (shape={Sigma_orb__.shape}):')
+        print(f'\nLinear orbit estimator covariance [SI-units]:')
 
         header = ['','x','y','z','vx','vy','vz']
 
-        list_sig = (Sigma_orb__).tolist()
-        list_sig = [[var] + row for row,var in zip(list_sig, header[1:])]
+        for si, sig in enumerate(dat['sigmas']):
+            if si == 0:
+                print('\nCOV - SCAN ONLY - OD')
+            elif si == 1:
+                print('\nCOV - SCAN IOD')
+            else:
+                print(f'\nCOV - CHASE step {si-1}')
 
-        print(tabulate(list_sig, header, tablefmt="simple"))
+            list_sig = sig.tolist()
+            list_sig = [[var] + row for row,var in zip(list_sig, header[1:])]
+            print(tabulate(list_sig, header, tablefmt="simple", floatfmt="1.3e"))
 
-        print('='*20)
-        print('Init object')
-        print(init_object)
-        print('='*20 + '\n')
+        for si, sig in enumerate(dat['sigmas']):
+            if si == 0:
+                print('\nSTD - SCAN ONLY - OD')
+            elif si == 1:
+                print('\nSTD - SCAN IOD')
+            else:
+                print(f'\nSTD - CHASE step {si-1}')
 
-        print('='*20)
-        print('True object')
-        print(true_object)
-        print('='*20)
+            list_sig = [[np.sqrt(sig[ci,ci]) for ci,var in enumerate(header[1:])]]
+            print(tabulate(list_sig, header[1:], tablefmt="simple", floatfmt="1.3e"))
 
-        figsize = (12,8)
+
+    def plot(self, dat):
+        passes = dat['passes']
+        data = dat['data']
+        scan_and_chase_datas = dat['scan_and_chase_datas']
+        index = dat['index']
+
+        obj = self.pop.get_object(index)
 
         max_snr = 10*np.log10(passes[0].calculate_snr(radar.tx[0], radar.rx[0], obj.d))
 
-        print(f'Time for scheduler to inject chase: {chase_schdeule_time} sec')
+        fig = plt.figure(figsize=(12,8))
+        axes = np.array([
+            [
+                fig.add_subplot(221),
+                fig.add_subplot(222),
+            ],
+            [
+                fig.add_subplot(223),
+                fig.add_subplot(224),
+            ],
+        ])
 
-        fig, axes = sorts.plotting.observed_parameters([data[0]], passes=[passes[0]], figsize = figsize)
+        axes[1][1].plot(data[0]['t']/60.0, 10*np.log10(data[0]['snr']), 'xk', alpha=1, label='Scan')
 
-        axes[1][1].plot(passes[0].t/60.0, max_snr, '-g', alpha=1)
+        _, axes = sorts.plotting.observed_parameters([scan_and_chase_datas[0]], passes=[passes[0]], axes=axes)
+
+        axes[1][1].plot(passes[0].t/60.0, max_snr, '-g', alpha=1, label='Optimal')
         axes[1][1].set_ylim([0.0, max_snr.max()])
-        fig.suptitle('Scan')
-        fig.savefig(self.get_path(f'scan_index{index}.png'))
-        plt.close(fig)
-
-        fig, axes = sorts.plotting.observed_parameters([scan_and_chase_datas[0]], passes=[passes[0]], figsize = figsize)
-
-        axes[1][1].plot(passes[0].t/60.0, max_snr, '-g', alpha=1)
-        axes[1][1].set_ylim([0.0, max_snr.max()])
+        L = axes[1][1].legend()
+        L.get_texts()[1].set_text('Observed')
         fig.suptitle('Scan and chase')
         fig.savefig(self.get_path(f'chase_index{index}.png'))
-        plt.close(fig)
 
         plt.show()
 
 
-
-    @sorts.MPI_action(action='barrier')
-    @sorts.iterable_step(iterable='objs', MPI=False, log=True, reduce=lambda t,x: None)
-    @sorts.pre_post_actions(post='plot')
-    @sorts.cached_step(caches='pickle')
-    def calc(self, index, obj, **kwargs):
-        return self.iterative_det_od(index, obj, **kwargs)
+    @sorts.iterable_step(iterable='inds', MPI=False, log=True, reduce=lambda t,x: None)
+    def calc(self, index, val, **kwargs):
+        return self.iterative_det_od(index, **kwargs)
 
 
-    def iterative_det_od(self, index, obj, **kwargs):
+    def iterative_det_od(self, index, **kwargs):
+        data_path = self.get_path(f'calc/{index}_data.pickle').resolve()
+        _data = self.load_pickle(data_path)
+        if _data is not None:
+            return _data
+
+        obj = self.pop.get_object(index)
 
         sigmas = []
 
@@ -426,7 +410,10 @@ class ScanAndChaseSim(sorts.Simulation):
             epoch = scheduler.epoch,
         )
 
-        return Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object.state, true_object.state, sigmas
+        _data = Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object.state, true_object.state, sigmas
+        self.save_pickle(data_path, _data)
+
+        return _data
 
 
 
