@@ -133,6 +133,10 @@ class ScanAndChaseSim(sorts.Simulation):
     def get_data(self, index, plot=False, no_cache=False):
         ret_ = self.iterative_det_od(index, no_cache=no_cache)
 
+        if ret_ is None:
+            print(f'NO DATA FOR OBJECT {index}')
+            return ret_
+
         Sigma_orb__, scan_and_chase_datas, t, states, passes, data, chase_schdeule_time, init_object, true_object, sigmas = ret_
 
         dat = {}
@@ -153,7 +157,7 @@ class ScanAndChaseSim(sorts.Simulation):
 
         return dat
 
-    def print_sigmas(self, dat):
+    def print_sigmas(self, dat, plot=False):
 
         print(f'\nLinear orbit estimator covariance [SI-units]:')
 
@@ -181,6 +185,27 @@ class ScanAndChaseSim(sorts.Simulation):
 
             list_sig = [[np.sqrt(sig[ci,ci]) for ci,var in enumerate(header[1:])]]
             print(tabulate(list_sig, header[1:], tablefmt="simple", floatfmt="1.3e"))
+
+        if plot:
+            fig, axes = plt.subplots(2,3,figsize=(12,8))
+            axes = axes.flatten()
+
+            stds = np.empty((6, len(dat['sigmas'])))
+            for si, sig in enumerate(dat['sigmas']):
+                for ci in range(6):
+                    stds[ci,si] = np.sqrt(sig[ci,ci])
+            labels = ['Scan', 'IOD'] + [f'{x}' for x in range(len(dat['sigmas']) - 2)]
+            for ci in range(6):
+                if ci < 3:
+                    unit = 'm'
+                else:
+                    unit = 'm/s'
+
+                axes[ci].bar(labels, stds[ci,:])
+                axes[ci].set_ylabel(f'std({header[ci+1]}) [{unit}]', fontsize=16)
+                axes[ci].set_yscale('log')
+            fig.suptitle('Covariance matrix diagonal: scan and iterative chase')
+            plt.show()
 
 
     def plot(self, dat):
@@ -454,7 +479,6 @@ if run == 'norun':
     print('dat = sim.get_data(index, plot=False, no_cache=False)')
     print('sim.plot(dat)')
     print('sim.print_sigmas(dat)')
-    print('sim.')
 elif run == 'run':
     sim.run()
 else:
