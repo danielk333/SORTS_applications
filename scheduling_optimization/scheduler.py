@@ -21,6 +21,21 @@ def get_pass_times(passes):
     t_pass = t_max - t_min
     return t_min, t_max, t_pass
 
+def get_outer_pass_times(passes):
+    '''Takes a set of passes over different RX stations for the same pass and gets time window
+    '''
+    for ind, ps in enumerate(passes):
+        if ind == 0:
+           t_min = ps.start()
+           t_max = ps.end()
+        else:
+            if ps.start() < t_min:
+                t_min = ps.start()
+            if ps.end() > t_max:
+                t_max = ps.end()
+
+    t_pass = t_max - t_min
+    return t_min, t_max, t_pass
 
 class TrackingScheduler(
         sorts.scheduler.StaticList, 
@@ -46,7 +61,7 @@ class TrackingScheduler(
         )
 
 
-    def setup_scheduler(self, population, t_start, t_end, priority, pulses, min_Sigma_orb, epoch=None, t_restriction=None):
+    def setup_scheduler(self, population, t_start, t_end, priority, pulses, min_Sigma_orb, epoch, t_restriction=None):
         self.population = population
         self.t_start = t_start
         self.t_end = t_end
@@ -92,7 +107,7 @@ class TrackingScheduler(
         '''
         order = np.argsort(self.priority)
 
-        base_nums = np.zeros(self.priority.shape, dtype=np.int)
+        base_nums = np.zeros(self.priority.shape, dtype=np.int32)
         base_nums_dist_ = 0
         for oid in order:
             base_nums[oid] += 1
@@ -100,20 +115,49 @@ class TrackingScheduler(
             if base_nums_dist_ >= self.pulses:
                 return
 
-        self.set_schedule(base_nums)
-        Sigma_orbs = self.determine_orbits()
+        below_baseline = True
+        skip = np.full(base_nums.shape, False, dtype=np.bool)
+        Sigma_orbs = None
+        while below_baseline:
+            self.set_schedule(base_nums)
+            Sigma_orbs_tmp = Sigma_orbs
+            Sigma_orbs = self.determine_orbits(skip = skip)
+            for i in range(len(Sigma_orbs)):
+                if skip[i]:
+                    Sigma_orbs[i] = Sigma_orbs_tmp[i]
+            
+            skip = np.full(base_nums.shape, True, dtype=np.bool)
+            below_baseline = False
+            
+            for oid, sig in enumerate(Sigma_orbs):
+                if np.any(np.sqrt(np.diag(sig)[:3]) > self.min_Sigma_orb[0]) or np.any(np.sqrt(np.diag(sig)[3:]) > self.min_Sigma_orb[1]):
+                    below_baseline = True
+                    base_nums[oid] += 1
+                    skip[oid] = False
 
-        for sig in Sigma_orbs:
-            print(sig)
+                print(np.sqrt(np.diag(sig)[:3]) - self.min_Sigma_orb[0], np.diag(sig)[3:] - self.min_Sigma_orb[1])
+
+        self.base_nums = base_nums
+        self.base_pulses = base_nums.sum()
+
+
+    def spend_pulses(self, pulses, scaling):
+        if scaling == 0:
+            x = scaling*self.priority + 1
+        else:
+            x = scaling*self.priority
+        x = x/np.sum(x)
+        nums = pulses*x
+        nums = np.floor(nums)
+        ind = np.argmax(self.priority)
+        nums[ind] += pulses - np.sum(nums)
+
+        return nums
 
 
     def set_schedule(self, nums):
-        '''This is the scheduling algorithm
+        '''This is the instance scheduling algorithm
         '''
-
-        #THE IDEA IS:
-        # - start with the baseline
-        # - use function to start adding measurement points to objects
 
         self.controllers = []
         pbar = tqdm(total=len(self.population), desc='Setting object schedule')
@@ -158,17 +202,22 @@ class TrackingScheduler(
                 break
 
 
-    def determine_orbits(self):
+    def determine_orbits(self, skip=None):
 
         Sigma_orbs = []
         pbar = tqdm(total=len(self.population), desc='Determining orbit covariances')
         for oid in range(len(self.population)):
             pbar.update(1)
+            if skip is not None:
+                if skip[oid]:
+                    Sigma_orbs.append(None)
+                    continue
 
             Sigma_orb = None
 
             for pind, passes in enumerate(self.passes[oid]):
-                t_min, t_max, t_pass = get_pass_times(passes)
+                
+                t_min, t_max, t_pass = get_outer_pass_times(passes)
 
                 t_od_epoch = t_min - 20.0
 
@@ -178,8 +227,9 @@ class TrackingScheduler(
                 obj.propagate(t_od_epoch)
 
                 datas = []
+                J = None
 
-                for rxi in range(len(self.radar.rx)):
+                for rxi in range(len(passes)):
                     data, J_rx = self.calculate_observation_jacobian(
                         passes[rxi], 
                         space_object = obj, 
@@ -189,26 +239,33 @@ class TrackingScheduler(
                         epoch = self.epoch,
                     )
                     datas.append(data)
-                    los_r = data['range'] - datas[0]['range']*0.5
-                    r_stds_tx = self._error_model.range_std(los_r, data['snr'])
+
+                    if data is None:
+                        if rxi == 0:
+                            break
+                        else:
+                            continue
+                    
+                    r_stds_tx = self._error_model.range_std(data['range_rx'], data['snr'])
                     v_stds_tx = self._error_model.range_rate_std(data['snr'])
 
                     Sigma_m_diag_tx = np.r_[r_stds_tx**2, v_stds_tx**2]
 
-                    if rxi > 0:
+                    if J is not None:
                         J = np.append(J, J_rx, axis=0)
                         Sigma_m_diag = np.append(Sigma_m_diag, Sigma_m_diag_tx, axis=0)
                     else:
                         J = J_rx
                         Sigma_m_diag = Sigma_m_diag_tx
 
-                Sigma_m_inv = np.diag(1.0/Sigma_m_diag)
-                
-                if Sigma_orb is None:
-                    Sigma_orb = np.linalg.inv(np.transpose(J) @ Sigma_m_inv @ J)
-                else:
-                    Sigma_orb0 = Sigma_orb
-                    Sigma_orb = np.linalg.inv(np.transpose(J) @ Sigma_m_inv @ J + np.linalg.inv(Sigma_orb0))
+                if J is not None:
+                    Sigma_m_inv = np.diag(1.0/Sigma_m_diag)
+                    
+                    if Sigma_orb is None:
+                        Sigma_orb = np.linalg.inv(np.transpose(J) @ Sigma_m_inv @ J)
+                    else:
+                        Sigma_orb0 = Sigma_orb
+                        Sigma_orb = np.linalg.inv(np.transpose(J) @ Sigma_m_inv @ J + np.linalg.inv(Sigma_orb0))
 
             Sigma_orbs.append(Sigma_orb)
 
