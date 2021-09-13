@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 
 import sorts
-
+from tqdm import tqdm
 
 def get_pass_times(passes):
     '''Takes a set of passes over different RX stations for the same pass and gets time window
@@ -34,33 +34,16 @@ class TrackingScheduler(
 
         kwargs.setdefault('controllers', [])
         self._time_step = kwargs.pop('time_step', 10.0)
-        cache_folder=kwargs.pop('error_model_cache')
+        cache_folder = kwargs.pop('error_model_cache')
 
         super().__init__(*args, **kwargs)
 
+        #ASSUME 1 RX STATION
         self._error_model = sorts.errors.LinearizedCodedIonospheric(
             self.radar.tx[0],
             seed=123, 
             cache_folder=cache_folder,
         )
-
-
-    def calculate_passes(self):
-        for oid, obj in enumerate(self.population):
-
-            if self.epoch is not None and obj.epoch is not None:
-                t = self.t_propagate - (obj.epoch - self.epoch).sec
-            else:
-                t = self.t_propagate
-
-            self.states[oid] = obj.get_state(t)
-            self.passes[oid] = radar.find_passes(t, states)
-
-            #ASSUME 1 RX STATION
-            self.passes[oid] = sorts.passes.group_passes(self.passes[oid])[0]
-
-            #interpolator in self.epoch time
-            self.interpolator[oid] = sorts.interpolation.Legendre8(self.states[oid], self.t_propagate)
 
 
     def setup_scheduler(self, population, t_start, t_end, priority, pulses, min_Sigma_orb, epoch=None, t_restriction=None):
@@ -82,11 +65,47 @@ class TrackingScheduler(
         self.calculate_passes()
 
 
-    def set_baseline(self):
+    def calculate_passes(self):
+        pbar = tqdm(total=len(self.population), desc='Getting object passes')
+        for oid, obj in enumerate(self.population):
+            pbar.update(1)
+
+            if self.epoch is not None and obj.epoch is not None:
+                t = self.t_propagate - (obj.epoch - self.epoch).sec
+            else:
+                t = self.t_propagate
+
+            self.states[oid] = obj.get_state(t)
+            self.passes[oid] = self.radar.find_passes(t, self.states[oid], cache_data=False)
+
+            #ASSUME 1 RX STATION
+            self.passes[oid] = sorts.passes.group_passes(self.passes[oid])[0]
+
+            #interpolator in self.epoch time
+            self.interpolator[oid] = sorts.interpolation.Legendre8(self.states[oid], self.t_propagate)
+        pbar.close()
+
+
+    def set_base_observations(self):
         '''This function sets the minimum number of samples per object to make the minimum orbit requirements.
         If we move above max pulses, we start dropping objects from end of priority list.
         '''
-        pass
+        order = np.argsort(self.priority)
+
+        base_nums = np.zeros(self.priority.shape, dtype=np.int)
+        base_nums_dist_ = 0
+        for oid in order:
+            base_nums[oid] += 1
+            base_nums_dist_ += 1
+            if base_nums_dist_ >= self.pulses:
+                return
+
+        self.set_schedule(base_nums)
+        Sigma_orbs = self.determine_orbits()
+
+        for sig in Sigma_orbs:
+            print(sig)
+
 
     def set_schedule(self, nums):
         '''This is the scheduling algorithm
@@ -97,8 +116,11 @@ class TrackingScheduler(
         # - use function to start adding measurement points to objects
 
         self.controllers = []
+        pbar = tqdm(total=len(self.population), desc='Setting object schedule')
         for oid, num in enumerate(nums):
+            pbar.update(1)
             self.set_track_observations(oid, num)
+        pbar.close()
 
 
     def set_track_observations(self, oid, num):
@@ -121,9 +143,8 @@ class TrackingScheduler(
                 t_select = np.linspace(t_min, t_max, num=curr_nums)
             elif curr_nums == 1:
                 t_select = np.array([0.5*(t_min + t_max)], dtype=np.float64)
-            else:
-                continue
-            ecefs_select = interpolator.get_state(t_select)
+
+            ecefs_select = self.interpolator[oid].get_state(t_select)
 
             tracker = sorts.controller.Tracker(
                 radar = self.radar, 
@@ -133,16 +154,23 @@ class TrackingScheduler(
 
             self.controllers.append(tracker)
 
+            if tot_nums == num:
+                break
+
 
     def determine_orbits(self):
 
         Sigma_orbs = []
+        pbar = tqdm(total=len(self.population), desc='Determining orbit covariances')
         for oid in range(len(self.population)):
+            pbar.update(1)
+
+            Sigma_orb = None
 
             for pind, passes in enumerate(self.passes[oid]):
                 t_min, t_max, t_pass = get_pass_times(passes)
 
-                t_od_epoch -= 20.0
+                t_od_epoch = t_min - 20.0
 
                 #set object state to right at start of pass
                 #This is better for OD
@@ -152,18 +180,18 @@ class TrackingScheduler(
                 datas = []
 
                 for rxi in range(len(self.radar.rx)):
-                    data, J_rx = scheduler.calculate_observation_jacobian(
+                    data, J_rx = self.calculate_observation_jacobian(
                         passes[rxi], 
-                        space_object=obj, 
-                        variables=variables, 
-                        deltas=deltas,
-                        snr_limit=False,
+                        space_object = obj, 
+                        variables = self._od_variables, 
+                        deltas = self._od_deltas,
+                        snr_limit = True,
                         epoch = self.epoch,
                     )
                     datas.append(data)
                     los_r = data['range'] - datas[0]['range']*0.5
-                    r_stds_tx = err.range_std(los_r, data['snr'])
-                    v_stds_tx = err.range_rate_std(data['snr'])
+                    r_stds_tx = self._error_model.range_std(los_r, data['snr'])
+                    v_stds_tx = self._error_model.range_rate_std(data['snr'])
 
                     Sigma_m_diag_tx = np.r_[r_stds_tx**2, v_stds_tx**2]
 
@@ -176,7 +204,7 @@ class TrackingScheduler(
 
                 Sigma_m_inv = np.diag(1.0/Sigma_m_diag)
                 
-                if pind == 0:
+                if Sigma_orb is None:
                     Sigma_orb = np.linalg.inv(np.transpose(J) @ Sigma_m_inv @ J)
                 else:
                     Sigma_orb0 = Sigma_orb
@@ -184,6 +212,8 @@ class TrackingScheduler(
 
             Sigma_orbs.append(Sigma_orb)
 
+        pbar.close()
+        
         return Sigma_orbs
 
 
