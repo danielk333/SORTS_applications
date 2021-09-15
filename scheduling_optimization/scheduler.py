@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import pathlib
 import numpy as np
+from scipy.stats import multivariate_normal
 
 import sorts
 from tqdm import tqdm
@@ -141,15 +142,21 @@ class TrackingScheduler(
         self.base_pulses = base_nums.sum()
 
 
-    def spend_pulses(self, pulses, scaling):
-        if scaling == 0:
-            x = scaling*self.priority + 1
-        else:
-            x = scaling*self.priority
-        x = x/np.sum(x)
-        nums = pulses*x
+    def spend_pulses(self, pulses, params, x=None):
+
+        if x is None:
+            x = self.priority
+        
+        #print((self.priority + params[1])/params[0], self.priority, params[1], params[0])
+        distribution = np.log(1 + (x + params[1])/params[0])
+
+        distribution[np.isinf(distribution)] = 0
+        distribution = distribution + np.min(distribution)
+        distribution = distribution/np.sum(distribution)
+
+        nums = pulses*distribution
         nums = np.floor(nums)
-        ind = np.argmax(self.priority)
+        ind = np.argmax(x)
         nums[ind] += pulses - np.sum(nums)
 
         return nums
@@ -187,6 +194,8 @@ class TrackingScheduler(
                 t_select = np.linspace(t_min, t_max, num=curr_nums)
             elif curr_nums == 1:
                 t_select = np.array([0.5*(t_min + t_max)], dtype=np.float64)
+            else:
+                continue
 
             ecefs_select = self.interpolator[oid].get_state(t_select)
 
@@ -214,6 +223,7 @@ class TrackingScheduler(
                     continue
 
             Sigma_orb = None
+            obj = self.population.get_object(oid)
 
             for pind, passes in enumerate(self.passes[oid]):
                 
@@ -223,8 +233,12 @@ class TrackingScheduler(
 
                 #set object state to right at start of pass
                 #This is better for OD
-                obj = self.population.get_object(oid)
                 obj.propagate(t_od_epoch)
+
+                if Sigma_orb is None:
+                    state__ = multivariate_normal.rvs(mean=obj.state.cartesian.flatten(), cov=Sigma_orb)
+                    state__.shape = (6,1)
+                    obj.state.cartesian = state__
 
                 datas = []
                 J = None
