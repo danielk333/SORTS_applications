@@ -29,7 +29,6 @@ dt = 3600.0
 days = 8.0
 LD = 384402e3
 t_slice = 3600.0
-pass_predict = 32000e3/LD
 
 kernel = pathlib.Path('/home/danielk/IRF/IRF_GITLAB/EPHEMERIS_FILES/de430.bsp')
 
@@ -138,11 +137,27 @@ r_axes = [
 ]
 for tx_d in data:
     for rxi, rx_d in enumerate(tx_d):
-        for dat in rx_d:
-            axes[rxi].plot(dat['tx_k'][1,:], dat['tx_k'][2,:])
-            sn_axes[rxi].plot(dat['t'] - np.min(dat['t']), 10*np.log10(dat['snr']))
-            r_axes[rxi].plot(dat['t'] - np.min(dat['t']), dat['range']*0.5/LD)
+        for dati, dat in enumerate(rx_d):
+            axes[rxi].plot(dat['tx_k'][1,:], dat['tx_k'][2,:], label=f'Pass {dati}')
+            sn_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), 10*np.log10(dat['snr']), label=f'Pass {dati}')
+            r_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), (dat['range']*0.5)/LD, label=f'Pass {dati}')
 
+axes[0].legend()
+for rxi, ax in enumerate(axes):
+    ax.set_xlabel('k_x [East]')
+    ax.set_ylabel('k_y [North]')
+    ax.set_title(f'Receiver station {rxi}')
+
+for rxi, ax in enumerate(sn_axes):
+    ax.set_xlabel('Time during pass [h]')
+    ax.set_ylabel('SNR [dB]')
+    ax.set_title(f'Receiver station {rxi}')
+
+r_axes[0].legend()
+for rxi, ax in enumerate(r_axes):
+    ax.set_xlabel('Time during pass [h]')
+    ax.set_ylabel('Range [LD]')
+    ax.set_title(f'Receiver station {rxi}')
 
 #plot results
 fig = plt.figure(figsize=(15,15))
@@ -160,6 +175,8 @@ for ctrl in scheduler.controllers:
 fig = plt.figure(figsize=(15,15))
 ax = fig.add_subplot(111)
 ax.plot(t/(3600.0*24), np.linalg.norm(states[:3,:], axis=0)/LD)
-ax.axhline(pass_predict, color='r')
+
+ax.set_xlabel('Time since epoch [h]')
+ax.set_ylabel('Distance from Earth [LD]')
 
 plt.show()
