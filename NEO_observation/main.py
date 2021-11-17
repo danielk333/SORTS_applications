@@ -170,7 +170,7 @@ if __name__=='__main__':
     for tx_d in data:
         for rxi, rx_d in enumerate(tx_d):
             for dati, dat in enumerate(rx_d):
-                axes[rxi].plot(dat['tx_k'][1,:], dat['tx_k'][2,:], label=f'Pass {dati}')
+                axes[rxi].plot(dat['tx_k'][0,:], dat['tx_k'][1,:], label=f'Pass {dati}')
                 sn_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), 10*np.log10(dat['snr']), label=f'Pass {dati}')
                 r_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), (dat['range']*0.5)/LD, label=f'Pass {dati}')
 
