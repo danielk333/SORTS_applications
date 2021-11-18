@@ -10,6 +10,7 @@ import configparser
 import argparse
 import sys
 import subprocess
+import shutil
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,6 +20,8 @@ from astropy.time import Time, TimeDelta
 
 import sorts
 import pyorb
+
+import ndm_plotting
 
 HERE = pathlib.Path(__file__).parent.resolve()
 CACHE = HERE / '.cache'
@@ -36,18 +39,74 @@ def setup():
     CACHE.mkdir(parents=False, exist_ok=True)
 
     get_cmd = ['git', 'clone', 'https://gitlab.obspm.fr/apetit/nasa-breakup-model.git']
-    make_cmd = ['make']
 
     if not MODEL_DIR.is_dir():
         subprocess.check_call(get_cmd, cwd=str(MODEL_DIR))
     
-    subprocess.check_call(make_cmd, cwd=str(MODEL_DIR / 'src'))
+    subprocess.check_call(['make'], cwd=str(MODEL_DIR / 'src'))
 
 
 
-def run_nasa_breakup():
+def run_nasa_breakup(nbm_param_file, nbm_param_type, space_object, fragmentation_time):
+    old_inps = (MODEL_DIR / 'bin' / 'inputs').glob('nbm_param_[0-9]*.txt')
+    for file in old_inps:
+        print(f'Removing old input file {file}')
+        file.unlink()
+
+    shutil.copy(nbm_param_file, str(MODEL_DIR / 'bin' / 'inputs' / 'nbm_param_1.txt'))
+
+    event_time = space_object.epoch + TimeDelta(fragmentation_time*3600.0, format='sec')
+
+    state_itrs = space_object.get_state([fragmentation_time*3600.0])
+    state_teme = sorts.frames.convert(
+        event_time, 
+        state_itrs, 
+        in_frame='ITRS', 
+        out_frame='TEME',
+    )
+    orbit_teme = pyorb.Orbit(
+        cartesian=state_teme,
+        M0 = pyorb.M_earth,
+        m = space_object.parameters.get('m', 0.0),
+        degrees=True,
+        type='mean',
+    )
+    kepler_teme = orbit_teme.kepler.flatten()
+
+    sched_header = ['ID_NORAD', 'J_DAY', 'YYYY', 'MM', 'DD', 'NAME', 'TYPE', 'SMA[m]', 'ECC', 'INC[deg]', 'RAAN[deg]', 'A_PER[deg]', 'MA[deg]', 'MASS[kg]', 'S']
+    sched_data = [
+        '00000001', 
+        f'{event_time.jd:.6f}', 
+        str(event_time.datetime.year), 
+        str(event_time.datetime.month), 
+        str(event_time.datetime.day),
+        str(space_object.oid),
+        nbm_param_type,
+        f'{kepler_teme[0]:.8e}',
+        f'{kepler_teme[1]:.8e}',
+        f'{kepler_teme[2]:.8e}',
+        f'{kepler_teme[4]:.8e}',
+        f'{kepler_teme[3]:.8e}',
+        f'{kepler_teme[5]:.8e}',
+        str(space_object.parameters.get('m', 0.0)),
+        str(1.0), #scale factor
+    ]
+
+    max_key_len = max([len(x) for x in sched_header])
+    print('Fragmentation model with object:')
+    for key, val in zip(sched_header, sched_data):
+        print(f'{key:<{max_key_len}}: {val}')
+
+    sched_file = MODEL_DIR / 'bin' / 'inputs' / 'schedule.txt'
+    print(f'Writing schedule file: {sched_file}')
+    with open(sched_file, 'w') as fh:
+        fh.write(' '.join(sched_header) + '\n')
+        fh.write(' '.join(sched_data))
+
+    print('Running nasa-breakup-model...')
     subprocess.check_call(['./breakup'], cwd=str(MODEL_DIR / 'bin'))
-
+    print('nasa-breakup-model done')
+    
     data_file = MODEL_DIR / 'bin' / 'outputs' / 'cloud_cart.txt'
 
     cloud_data = np.genfromtxt(
@@ -64,10 +123,22 @@ class TrackingScheduler(
         sorts.scheduler.ObservedParameters,
     ):
     def __init__(self, radar, t, states, dwell=0.1, profiler=None, logger=None, **kwargs):
-        self.passes = radar.find_passes(t, states)
+        self.dwell = dwell
+        super().__init__(
+            radar=radar, 
+            controllers=None,
+            logger=logger, 
+            profiler=profiler,
+            **kwargs
+        )
+        self.set_tracker(t, states)
+
+
+    def set_tracker(self, t, states):
+        self.passes = self.radar.find_passes(t, states)
         passes = sorts.passes.group_passes(self.passes)
 
-        controllers = []
+        self.controllers = []
         for txi in range(len(passes)):
             for psi in range(len(passes[txi])):
                 if len(passes[txi][psi]) == 0:
@@ -83,20 +154,13 @@ class TrackingScheduler(
                 inds = np.logical_and(t >= t_min, t <= t_max)
 
                 tracker = sorts.controller.Tracker(
-                    radar = radar, 
+                    radar = self.radar, 
                     t = t[inds], 
                     ecefs = states[:3, inds],
-                    dwell = dwell,
+                    dwell = self.dwell,
                 )
-                controllers.append(tracker)
+                self.controllers.append(tracker)
 
-        super().__init__(
-            radar=radar, 
-            controllers=controllers,
-            logger=logger, 
-            profiler=profiler,
-            **kwargs
-        )
 
 
 
@@ -167,8 +231,6 @@ if __name__=='__main__':
                 settings=dict(
                     in_frame='TEME',
                     out_frame='ITRS',
-                    drag_force = True,
-                    radiation_pressure = False,
                 )
             )
     elif args.propagator == 'Orekit':
@@ -219,6 +281,20 @@ if __name__=='__main__':
         space_object = pop.get_object(0)
         space_object.parameters.update(parameters)
 
+    # pop0 = sorts.population.tle_catalog(
+    #     tles,
+    #     sgp4_propagation = True, 
+    # )
+    # pop0.propagator_options['settings']['out_frame']='ITRS'
+    # obj0 = pop0.get_object(0)
+    
+    # print(space_object.propagator.settings)
+    # print(obj0.propagator.settings)
+
+    # print(space_object.get_state([0]))
+    # print(obj0.get_state([0]))
+    # print(obj0.get_state([0]) - space_object.get_state([0]))
+
     print(space_object)
 
     if 'fragmentation' in args.target:
@@ -228,11 +304,31 @@ if __name__=='__main__':
         }
 
         nbm_param_file = config.get('fragmentation', 'nbm_param_file', fallback=None)
+        nbm_param_default = config.get('fragmentation', 'nbm_param_default', fallback=None)
+        nbm_param_type = config.get('fragmentation', 'nbm_param_type')
+
         if nbm_param_file is None:
-            nbm_param_type = config.get('fragmentation', 'nbm_param_type', fallback=None)
-            if nbm_param_type is None:
+            if nbm_param_default is None:
                 raise ValueError('No nasa-breakup-model parameter file given')
-            nbm_param_file = str(nbm_param_defaults[nbm_param_type])
+            nbm_param_file = str(nbm_param_defaults[nbm_param_default])
+
+        fragmentation_time = config.getfloat('fragmentation', 'fragmentation_time')
+
+        cloud_data, cloud_header = run_nasa_breakup(
+            nbm_param_file, 
+            nbm_param_type, 
+            space_object, 
+            fragmentation_time,
+        )
+
+        nbm_folder = output / 'nbm_results'
+        nbm_folder.mkdir(parents=True, exist_ok=True)
+        nbm_results = (MODEL_DIR / 'bin' / 'outputs').glob('*.txt')
+        for file in nbm_results:
+            print(f'Moving nasa-breakup-model result to output {nbm_folder / file.name}')
+            shutil.copy(str(file), str(nbm_folder / file.name))
+
+        ndm_plotting.plot(MODEL_DIR / 'bin' / 'outputs', nbm_folder / 'plots')
     else:
         nbm_param_file = None
 
@@ -272,28 +368,27 @@ if __name__=='__main__':
 
     out_data_txt = ''
 
-    for pi, ps in enumerate(scheduler.passes[0][0]):
-        ps_start = obs_epoch + TimeDelta(ps.start(), format='sec')
-        ps_end = obs_epoch + TimeDelta(ps.end(), format='sec')
-        out_data_txt += f'Pass {pi}: Start: {ps_start.iso} -> End: Start: {ps_end.iso}\n'
+    for txi in range(len(radar.tx)):
+        for rxi in range(len(radar.rx)):
+            for pi, ps in enumerate(scheduler.passes[txi][rxi]):
+                ps_start = obs_epoch + TimeDelta(ps.start(), format='sec')
+                ps_end = obs_epoch + TimeDelta(ps.end(), format='sec')
+                out_data_txt += f'TX={txi} | RX={rxi} | Pass {pi} | Start: {ps_start.iso} -> End: {ps_end.iso}\n'
 
     #plot results
     fig1 = plt.figure(figsize=(15,15))
     fig2 = plt.figure(figsize=(15,15))
-    axes = [
-        fig1.add_subplot(211),
-    ]
-    r_axes = [
-        fig1.add_subplot(212),
-    ]
-    sn_axes = [
-        fig2.add_subplot(111),
-    ]
+    axes = []
+    r_axes = []
+    sn_axes = []
+    for ind in range(1, len(radar.rx)+1):
+        axes.append(fig1.add_subplot(2, len(radar.rx), ind))
+        r_axes.append(fig1.add_subplot(2, len(radar.rx), len(radar.rx) + ind))
+        sn_axes.append(fig2.add_subplot(1, len(radar.rx), ind))
 
     for tx_d in data:
         for rxi, rx_d in enumerate(tx_d):
             for dati, dat in enumerate(rx_d):
-                print(dat)
                 axes[rxi].plot(dat['tx_k'][0,:], dat['tx_k'][1,:], label=f'Pass {dati}')
                 sn_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), 10*np.log10(dat['snr']), label=f'Pass {dati}')
                 r_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), (dat['range']*0.5)*1e-3, label=f'Pass {dati}')
@@ -303,6 +398,9 @@ if __name__=='__main__':
         ax.set_xlabel('k_x [East]')
         ax.set_ylabel('k_y [North]')
         ax.set_title(f'Receiver station {rxi}')
+        ax.set_xlim([-1,1])
+        ax.set_ylim([-1,1])
+        
 
     for rxi, ax in enumerate(sn_axes):
         ax.set_xlabel('Time during pass [d]')
@@ -334,8 +432,6 @@ if __name__=='__main__':
     fig1.savefig(output / 'kvec_snr.png')
     fig2.savefig(output / 'range.png')
     fig3.savefig(output / '3d_obs.png')
-
-    #create pickle or h5 to load into jupyter notebook for exploratory stuffs
 
     with open(output / 'cmd.txt', 'w') as fh:
         fh.write(" ".join(sys.argv))
