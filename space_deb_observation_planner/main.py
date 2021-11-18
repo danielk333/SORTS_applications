@@ -109,6 +109,7 @@ if __name__=='__main__':
     parser.add_argument('radar', type=str, help='The observing radar system')
     parser.add_argument('config', type=str, help='Config file for the planning')
     parser.add_argument('output', type=str, help='Path to output results')
+    parser.add_argument('propagator', type=str, help='Propagator to use')
     parser.add_argument('--target', default=['object'], choices=['object', 'fragmentation', 'orbit'], nargs='+', help='Type of target for observation')
 
     args = parser.parse_args()
@@ -121,42 +122,132 @@ if __name__=='__main__':
     config = configparser.ConfigParser(interpolation=None)
     config.read([args.config])
 
-    line1 = config['orbit'].get('line 1', None)
-    line2 = config['orbit'].get('line 2', None)
+    line1 = config.get('orbit', 'line 1', fallback=None)
+    line2 = config.get('orbit', 'line 2', fallback=None)
 
-    if line1 is not None:
+    if line1 is not None and line2 is not None:
         tles = [
             (
                 line1,
                 line2,
              ),
         ]
+        print('Using TLEs')
+    else:
+        tles = None
+        state = np.array([
+                config.getfloat('orbit', 'x', fallback=None),
+                config.getfloat('orbit', 'y', fallback=None),
+                config.getfloat('orbit', 'z', fallback=None),
+                config.getfloat('orbit', 'vx', fallback=None),
+                config.getfloat('orbit', 'vy', fallback=None),
+                config.getfloat('orbit', 'vz', fallback=None),
+            ], 
+            dtype=np.float64,
+        )
+        coords = config.get('orbit', 'coordinate-system')
+        epoch = Time(config.getfloat('orbit', 'epoch'), format='mjd')
 
-        pop = sorts.population.tle_catalog(tles, kepler=False)
-        pop.propagator_options['settings']['out_frame'] = 'ITRS' #output states in ECEF
+    parameters = dict(
+        d = config.getfloat('orbit', 'd', fallback=None),
+        A = config.getfloat('orbit', 'a', fallback=None),
+        m = config.getfloat('orbit', 'm', fallback=None),
+    )
+    parameters = {key:val for key,val in parameters.items() if val is not None}
+
+    if args.propagator == 'SGP4':
+        if 'fragmentation' not in args.target and 'orbit' not in args.target:
+            sgp4_propagation = True
+            propagator = None
+            propagator_options = {}
+        else:
+            sgp4_propagation = False
+            propagator = sorts.propagator.SGP4
+            propagator_options = dict(
+                settings=dict(
+                    in_frame='TEME',
+                    out_frame='ITRS',
+                    drag_force = True,
+                    radiation_pressure = False,
+                )
+            )
+    elif args.propagator == 'Orekit':
+        orekit_data = config.get('general', 'orekit-data', fallback=None)
+        if orekit_data is None:
+            orekit_data = CACHE / 'orekit-data-master.zip'
+            if not orekit_data.is_file():
+                sorts.propagator.Orekit.download_quickstart_data(orekit_data, verbose=True)
+
+        else:
+            orekit_data = pathlib.Path(orekit_data)
+            if not orekit_data.is_file():
+                raise ValueError('Given orekit file does not exist')
+
+        propagator = sorts.propagator.Orekit
+        propagator_options = dict(
+            orekit_data = orekit_data, 
+            settings=dict(
+                in_frame='TEME',
+                out_frame='ITRS',
+                drag_force = True,
+                radiation_pressure = False,
+            )
+        )
+    else:
+        raise ValueError('No recognized propagator given')
+    print(f'Using propagator: {args.propagator}')
+
+    if tles is None:
+        propagator_options['settings']['in_frame'] = coords
+        space_object = sorts.SpaceObject(
+            propagator,
+            propagator_options = propagator_options,
+            state = state,
+            epoch = epoch,
+            parameters = parameters,
+        )
+    else:
+        pop = sorts.population.tle_catalog(
+            tles,
+            sgp4_propagation = sgp4_propagation, 
+            cartesian = True,
+            propagator = propagator,
+            propagator_options = propagator_options,
+        )
+        if sgp4_propagation:
+            pop.propagator_options['settings']['out_frame']='ITRS'
         space_object = pop.get_object(0)
+        space_object.parameters.update(parameters)
 
-    # pop = sorts.population.tle_catalog(
-    #     tles,
-    #     sgp4_propagation = False, 
-    #     propagator = sorts.propagator.SGP4,
-    #     propagator_options = {
-    #         'settings': {
-    #             'out_frame': 'ITRS',
-    #         },
-    #     },
-    # )
+    print(space_object)
 
+    if 'fragmentation' in args.target:
+        nbm_param_defaults = {
+            'sc': MODEL_DIR / 'bin' / 'inputs' / 'nbm_param_sc.txt',
+            'rb': MODEL_DIR / 'bin' / 'inputs' / 'nbm_param_rb.txt',
+        }
 
-    
+        nbm_param_file = config.get('fragmentation', 'nbm_param_file', fallback=None)
+        if nbm_param_file is None:
+            nbm_param_type = config.get('fragmentation', 'nbm_param_type', fallback=None)
+            if nbm_param_type is None:
+                raise ValueError('No nasa-breakup-model parameter file given')
+            nbm_param_file = str(nbm_param_defaults[nbm_param_type])
+    else:
+        nbm_param_file = None
 
-    radar = sorts.radars.eiscat_uhf
-    radar.rx = radar.rx[0:1]
+    obs_epoch = config.getfloat('general', 'epoch', fallback=None)
+    if obs_epoch is None:
+        obs_epoch = space_object.epoch
+    else:
+        obs_epoch = Time(obs_epoch, format='mjd')
 
-    epoch = space_object.epoch
-    t_start = 1*24.0*3600.0
-    t_end = 3*24.0*3600.0
-    t_step = 10.0
+    print(f'Planning epoch = {obs_epoch}')
+    t_start = config.getfloat('general', 't_start')*3600.0
+    t_end = config.getfloat('general', 't_end')*3600.0
+    t_step = config.getfloat('general', 't_step')
+
+    print(f'Planning time = t0 + {t_start/3600.0} h -> t0 + {t_end/3600.0} h')
 
     profiler = sorts.profiling.Profiler()
     logger = sorts.profiling.get_logger()
@@ -175,13 +266,16 @@ if __name__=='__main__':
     data = scheduler.observe_passes(
         scheduler.passes, 
         space_object=space_object, 
-        epoch=epoch, 
+        epoch=obs_epoch, 
         snr_limit=False,
     )
 
-    for ps in scheduler.passes[0][0]:
-        ps_start = epoch + TimeDelta(ps.start(), format='sec')
-        print(ps_start.iso)
+    out_data_txt = ''
+
+    for pi, ps in enumerate(scheduler.passes[0][0]):
+        ps_start = obs_epoch + TimeDelta(ps.start(), format='sec')
+        ps_end = obs_epoch + TimeDelta(ps.end(), format='sec')
+        out_data_txt += f'Pass {pi}: Start: {ps_start.iso} -> End: Start: {ps_end.iso}\n'
 
     #plot results
     fig1 = plt.figure(figsize=(15,15))
@@ -199,6 +293,7 @@ if __name__=='__main__':
     for tx_d in data:
         for rxi, rx_d in enumerate(tx_d):
             for dati, dat in enumerate(rx_d):
+                print(dat)
                 axes[rxi].plot(dat['tx_k'][0,:], dat['tx_k'][1,:], label=f'Pass {dati}')
                 sn_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), 10*np.log10(dat['snr']), label=f'Pass {dati}')
                 r_axes[rxi].plot((dat['t'] - np.min(dat['t']))/(3600.0*24), (dat['range']*0.5)*1e-3, label=f'Pass {dati}')
@@ -233,19 +328,17 @@ if __name__=='__main__':
                 'g',
             )
 
-    fig4 = plt.figure(figsize=(15,15))
-    ax = fig4.add_subplot(111)
-    ax.plot(t/(3600.0*24), np.linalg.norm(states[:3,:], axis=0)*1e-3)
-
     ax.set_xlabel('Time since epoch [d]')
     ax.set_ylabel('Distance from Earth [km]')
 
-    fig1.savefig(figure_output / 'kvec_snr.png')
-    fig2.savefig(figure_output / 'range.png')
-    fig3.savefig(figure_output / '3d_obs.png')
-    fig4.savefig(figure_output / 'earth_distance.png')
+    fig1.savefig(output / 'kvec_snr.png')
+    fig2.savefig(output / 'range.png')
+    fig3.savefig(output / '3d_obs.png')
 
     #create pickle or h5 to load into jupyter notebook for exploratory stuffs
 
-    with open(figure_output / 'cmd.txt', 'w') as fh:
+    with open(output / 'cmd.txt', 'w') as fh:
         fh.write(" ".join(sys.argv))
+
+    with open(output / 'data.txt', 'w') as fh:
+        fh.write(out_data_txt)
