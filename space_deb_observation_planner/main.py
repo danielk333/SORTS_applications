@@ -1,21 +1,22 @@
 #!/usr/bin/env python
 
 '''
-E3D Demonstrator SST planner
-================================
+SST planner CLI
+=================
 
 '''
 import pathlib
-import configparser
 import argparse
 import sys
 import subprocess
 import shutil
 import pickle
 import multiprocessing as mp
-from tqdm import tqdm
+import importlib.util
 import time
+import logging
 
+from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
@@ -26,256 +27,31 @@ import sorts
 import pyorb
 
 import ndm_plotting
-
-HERE = pathlib.Path(__file__).parent.resolve()
-CACHE = HERE / '.cache'
-MODEL_DIR = CACHE / 'nasa-breakup-model'
-
-
-def check_setup():
-    bin_file = CACHE / 'nasa-breakup-model' / 'bin' / 'breakup'
-    return bin_file.is_file()
+import sst_simulation
+import ndm_wrapper
+import configuration
 
 
-def setup():
-    '''Setup requrements for this CLI
-    '''
+def run_passes_planner():
+    pass
 
-    CACHE.mkdir(parents=False, exist_ok=True)
 
-    get_cmd = ['git', 'clone', 'https://gitlab.obspm.fr/apetit/nasa-breakup-model.git']
+def run_object_planner():
+    pass
 
-    if not MODEL_DIR.is_dir():
-        subprocess.check_call(get_cmd, cwd=str(MODEL_DIR))
+
+def run_fragmentation_planner():
+    if not ndm_wrapper.check_setup():
+        ndm_wrapper.setup()
+
+
+def run_orbit_planner():
+    pass
+
+
+def get_base_object(config):
     
-    subprocess.check_call(['make'], cwd=str(MODEL_DIR / 'src'))
 
-
-def process_orbit(
-            state,
-            parameters,
-            epoch,
-            t,
-            propagator,
-            propagator_options,
-            scheduler,
-            obs_epoch,
-            num,
-        ):
-    space_orbit = sorts.SpaceObject(
-        propagator,
-        propagator_options = propagator_options,
-        x = state[0],
-        y = state[1],
-        z = state[2],
-        vx = state[3],
-        vy = state[4],
-        vz = state[5],
-        epoch = epoch,
-        parameters = parameters,
-    )
-    space_orbit.in_frame = 'TEME'
-    space_orbit.out_frame = 'ITRS'
-    space_orbit.orbit.type = 'mean'
-    space_orbit.orbit.degrees = True
-
-    odatas = []
-    for anom in tqdm(np.linspace(0, 360.0, num=num)):
-        space_orbit.orbit.anom = anom
-
-        states_orb = space_orbit.get_state(t)
-        interpolator = sorts.interpolation.Legendre8(states_orb, t)
-        scheduler.set_tracker(t, states_orb)
-        odatas += [scheduler.observe_passes(
-            scheduler.passes, 
-            space_object = space_orbit, 
-            epoch = obs_epoch, 
-            interpolator = interpolator,
-            snr_limit = False,
-        )]
-    return odatas
-
-
-def process_fragment(
-            fragment,
-            fragmentation_epoch,
-            t,
-            propagator,
-            propagator_options,
-            scheduler,
-            obs_epoch,
-        ):
-    space_fragment = sorts.SpaceObject(
-        propagator,
-        propagator_options = propagator_options,
-        state = fragment[4:10],
-        epoch = fragmentation_epoch,
-        parameters = dict(
-            m = fragment[11],
-            d = fragment[12],
-        ),
-    )
-
-    states_fragments = space_fragment.get_state(t)
-    interpolator = sorts.interpolation.Legendre8(states_fragments, t)
-    scheduler.set_tracker(t, states_fragments)
-    fdata = scheduler.observe_passes(
-        scheduler.passes, 
-        space_object = space_fragment, 
-        epoch = obs_epoch, 
-        interpolator = interpolator,
-        snr_limit = False,
-    )
-    return fdata, states_fragments
-
-
-def run_nasa_breakup(nbm_param_file, nbm_param_type, space_object, fragmentation_time):
-    old_inps = (MODEL_DIR / 'bin' / 'inputs').glob('nbm_param_[0-9]*.txt')
-    for file in old_inps:
-        print(f'Removing old input file {file}')
-        file.unlink()
-
-    shutil.copy(nbm_param_file, str(MODEL_DIR / 'bin' / 'inputs' / 'nbm_param_1.txt'))
-
-    event_time = space_object.epoch + TimeDelta(fragmentation_time*3600.0, format='sec')
-
-    state_itrs = space_object.get_state([fragmentation_time*3600.0])
-    state_teme = sorts.frames.convert(
-        event_time, 
-        state_itrs, 
-        in_frame='ITRS', 
-        out_frame='TEME',
-    )
-    orbit_teme = pyorb.Orbit(
-        cartesian=state_teme,
-        M0 = pyorb.M_earth,
-        m = space_object.parameters.get('m', 0.0),
-        degrees=True,
-        type='mean',
-    )
-    kepler_teme = orbit_teme.kepler.flatten()
-
-    sched_header = [
-        'ID_NORAD', 'J_DAY', 'YYYY', 
-        'MM', 'DD', 'NAME', 
-        'TYPE', 'SMA[m]', 'ECC', 
-        'INC[deg]', 'RAAN[deg]', 'A_PER[deg]', 
-        'MA[deg]', 'MASS[kg]', 'S',
-    ]
-    sched_data = [
-        '00000001', 
-        f'{event_time.jd:.6f}', 
-        str(event_time.datetime.year), 
-        str(event_time.datetime.month), 
-        str(event_time.datetime.day),
-        str(space_object.oid),
-        nbm_param_type,
-        f'{kepler_teme[0]:.8e}',
-        f'{kepler_teme[1]:.8e}',
-        f'{kepler_teme[2]:.8e}',
-        f'{kepler_teme[4]:.8e}',
-        f'{kepler_teme[3]:.8e}',
-        f'{kepler_teme[5]:.8e}',
-        str(space_object.parameters.get('m', 0.0)),
-        str(1.0), #scale factor
-    ]
-
-    max_key_len = max([len(x) for x in sched_header])
-    print('Fragmentation model with object:')
-    for key, val in zip(sched_header, sched_data):
-        print(f'{key:<{max_key_len}}: {val}')
-
-    sched_file = MODEL_DIR / 'bin' / 'inputs' / 'schedule.txt'
-    print(f'Writing schedule file: {sched_file}')
-    with open(sched_file, 'w') as fh:
-        fh.write(' '.join(sched_header) + '\n')
-        fh.write(' '.join(sched_data))
-
-    print('Running nasa-breakup-model...')
-    subprocess.check_call(['./breakup'], cwd=str(MODEL_DIR / 'bin'))
-    print('nasa-breakup-model done')
-    
-    data_file = MODEL_DIR / 'bin' / 'outputs' / 'cloud_cart.txt'
-
-    cloud_data = np.genfromtxt(
-        str(data_file),
-        skip_header=1,
-    )
-    with open(data_file, 'r') as fh:
-        header = fh.readline().split()
-
-    return cloud_data, header
-
-
-class TrackingScheduler(
-            sorts.scheduler.StaticList, 
-            sorts.scheduler.ObservedParameters,
-        ):
-
-    def __init__(self, radar, dwell=0.1, profiler=None, logger=None, **kwargs):
-        self.dwell = dwell
-        super().__init__(
-            radar=radar, 
-            controllers=None,
-            logger=logger, 
-            profiler=profiler,
-            **kwargs
-        )
-
-    def set_tracker(self, t, states):
-        self.passes = self.radar.find_passes(t, states)
-        passes = sorts.passes.group_passes(self.passes)
-
-        self.controllers = []
-        for txi in range(len(passes)):
-            for psi in range(len(passes[txi])):
-                if len(passes[txi][psi]) == 0:
-                    continue
-                t_min = passes[txi][psi][0].start()
-                t_max = passes[txi][psi][0].end()
-                for ps in passes[txi][psi][1:]:
-                    if ps.start() < t_min:
-                        t_min = ps.start
-                    if ps.end() > t_max:
-                        t_max = ps.end()
-
-                inds = np.logical_and(t >= t_min, t <= t_max)
-
-                tracker = sorts.controller.Tracker(
-                    radar = self.radar, 
-                    t = t[inds], 
-                    ecefs = states[:3, inds],
-                    dwell = self.dwell,
-                )
-                self.controllers.append(tracker)
-
-
-if __name__ == '__main__':
-
-    if not check_setup():
-        setup()
-
-    parser = argparse.ArgumentParser(description='Plan SSA observations of a single object, fragmentation event or of an entire orbit')
-    parser.add_argument('radar', type=str, help='The observing radar system')
-    parser.add_argument('config', type=str, help='Config file for the planning')
-    parser.add_argument('output', type=str, help='Path to output results')
-    parser.add_argument('propagator', type=str, help='Propagator to use')
-    parser.add_argument('--target', default=['object'], choices=['object', 'fragmentation', 'orbit'], nargs='+', help='Type of target for observation')
-
-    args = parser.parse_args()
-
-    radar = getattr(sorts.radars, args.radar)
-
-    output = pathlib.Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
-
-    config = configparser.ConfigParser(interpolation=None)
-    config.read([args.config])
-
-    cores = config.getint('general', 'cores', fallback=0)
-
-    line1 = config.get('orbit', 'line 1', fallback=None)
-    line2 = config.get('orbit', 'line 2', fallback=None)
 
     if line1 is not None and line2 is not None:
         tles = [
@@ -284,16 +60,16 @@ if __name__ == '__main__':
                 line2,
             ),
         ]
-        print('Using TLEs')
+        logging.info('Using TLEs')
     else:
         tles = None
         state = np.array([
-                config.getfloat('orbit', 'x', fallback=None),
-                config.getfloat('orbit', 'y', fallback=None),
-                config.getfloat('orbit', 'z', fallback=None),
-                config.getfloat('orbit', 'vx', fallback=None),
-                config.getfloat('orbit', 'vy', fallback=None),
-                config.getfloat('orbit', 'vz', fallback=None),
+                config.getfloat('orbit', 'x'),
+                config.getfloat('orbit', 'y'),
+                config.getfloat('orbit', 'z'),
+                config.getfloat('orbit', 'vx'),
+                config.getfloat('orbit', 'vy'),
+                config.getfloat('orbit', 'vz'),
             ], 
             dtype=np.float64,
         )
@@ -301,11 +77,64 @@ if __name__ == '__main__':
         epoch = Time(config.getfloat('orbit', 'epoch'), format='mjd')
 
     parameters = dict(
-        d = config.getfloat('orbit', 'd', fallback=None),
-        A = config.getfloat('orbit', 'a', fallback=None),
-        m = config.getfloat('orbit', 'm', fallback=None),
+        d = config.getfloat('orbit', 'd'),
+        A = config.getfloat('orbit', 'a'),
+        m = config.getfloat('orbit', 'm'),
     )
     parameters = {key: val for key, val in parameters.items() if val is not None}
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='\
+        Plan SSA observations of a single object, \
+        fragmentation event or of an entire orbit')
+    parser.add_argument('radar', type=str, help='The observing radar system')
+    parser.add_argument('config', type=str, help='Config file for the planning')
+    parser.add_argument('output', type=str, help='Path to output results')
+    parser.add_argument('propagator', type=str, help='Propagator to use')
+    parser.add_argument(
+        '--target',
+        default=['object'],
+        choices=[
+            'passes',
+            'object', 
+            'fragmentation', 
+            'orbit',
+        ],
+        nargs='+',
+        help='Type of target for observation',
+    )
+
+    args = parser.parse_args()
+
+    radar = getattr(sorts.radars, args.radar)
+
+    output = pathlib.Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+
+    config = configuration.get_config(pathlib.Path(args.config))
+
+    cores = config.getint('general', 'cores')
+    if cores is None or cores < 1:
+        cores = 1
+
+    custom_scheduler_file = config.get('general', 'scheduler-file')
+
+    if custom_scheduler_file is not None:
+        spec = importlib.util.spec_from_file_location(
+            "custom_scheduler_module",
+            str(pathlib.Path(custom_scheduler_file).resolve()),
+        )
+        custom_scheduler_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(custom_scheduler_module)
+        custom_scheduler = custom_scheduler_module.scheduler
+        logging.info('Custom scheduler loaded, adding observation prediction')
+        logging.info(custom_scheduler)
+    else:
+        custom_scheduler = None
+        logging.info('No custom scheduler, using optimal SNR tracking')
+
 
     if args.propagator == 'SGP4':
         if 'fragmentation' not in args.target and 'orbit' not in args.target:
@@ -345,7 +174,7 @@ if __name__ == '__main__':
         )
     else:
         raise ValueError('No recognized propagator given')
-    print(f'Using propagator: {args.propagator}')
+    logging.info(f'Using propagator: {args.propagator}')
 
     if tles is None:
         propagator_options['settings']['in_frame'] = coords
@@ -376,14 +205,14 @@ if __name__ == '__main__':
     # pop0.propagator_options['settings']['out_frame']='ITRS'
     # obj0 = pop0.get_object(0)
     
-    # print(space_object.propagator.settings)
-    # print(obj0.propagator.settings)
+    # logging.info(space_object.propagator.settings)
+    # logging.info(obj0.propagator.settings)
 
-    # print(space_object.get_state([0]))
-    # print(obj0.get_state([0]))
-    # print(obj0.get_state([0]) - space_object.get_state([0]))
+    # logging.info(space_object.get_state([0]))
+    # logging.info(obj0.get_state([0]))
+    # logging.info(obj0.get_state([0]) - space_object.get_state([0]))
 
-    print(space_object)
+    logging.info(space_object)
 
     if 'fragmentation' in args.target:
         nbm_param_defaults = {
@@ -416,7 +245,7 @@ if __name__ == '__main__':
         nbm_folder.mkdir(parents=True, exist_ok=True)
         nbm_results = (MODEL_DIR / 'bin' / 'outputs').glob('*.txt')
         for file in nbm_results:
-            print(f'Moving nasa-breakup-model result to output {nbm_folder / file.name}')
+            logging.info(f'Moving nasa-breakup-model result to output {nbm_folder / file.name}')
             shutil.copy(str(file), str(nbm_folder / file.name))
 
         ndm_plotting.plot(MODEL_DIR / 'bin' / 'outputs', nbm_folder / 'plots')
@@ -429,18 +258,18 @@ if __name__ == '__main__':
     else:
         obs_epoch = Time(obs_epoch, format='mjd')
 
-    print(f'Planning epoch = {obs_epoch}')
+    logging.info(f'Planning epoch = {obs_epoch}')
     t_start = config.getfloat('general', 't_start')*3600.0
     t_end = config.getfloat('general', 't_end')*3600.0
     t_step = config.getfloat('general', 't_step')
 
-    print(f'Planning time = t0 + {t_start/3600.0} h -> t0 + {t_end/3600.0} h')
+    logging.info(f'Planning time = t0 + {t_start/3600.0} h -> t0 + {t_end/3600.0} h')
 
     profiler = sorts.profiling.Profiler()
     logger = sorts.profiling.get_logger()
 
     t = np.arange(t_start, t_end, t_step)
-    print(f'T=[{t[0]} s -> @ {len(t)} x {t_step} s steps -> {t[-1]} s]')
+    logging.info(f'T=[{t[0]} s -> @ {len(t)} x {t_step} s steps -> {t[-1]} s]')
     states = space_object.get_state(t)
 
     scheduler = TrackingScheduler(
@@ -489,26 +318,30 @@ if __name__ == '__main__':
         with open(output / 'orbit_data.pickle', 'wb') as fh:
             pickle.dump(odatas, fh)
 
-        FIX THIS
-        sn = []
-        t = []
-        for oid in range(len(orbit_data)):
-            for ind, d in enumerate(orbit_data[oid][0][0]):
-                snm = np.argmax(d['snr'])
-                sn.append(d['snr'][snm])
-                t.append(d['t'][snm])
-        t = np.array(t)
-        sn = np.array(t)
+            fig_orb = plt.figure()
+            axes = []
+            for ind in range(1, len(radar.rx)+1):
+                axes.append(fig_orb.add_subplot(2, len(radar.rx), ind))
 
-        t_sort = np.argsort(t)
-        t = t[t_sort]
-        sn = sn[t_sort]
+                sn = []
+                t = []
+                for oid in range(len(odatas)):
+                    for ind, d in enumerate(odatas[oid][0][ind-1]):
+                        snm = np.argmax(d['snr'])
+                        sn.append(d['snr'][snm])
+                        t.append(d['t'][snm])
+                t = np.array(t)
+                sn = np.array(t)
 
-        fig, ax = plt.subplots()
-        ax.plot(t/3600.0, 10*np.log10(sn), '.b')
-        ax.set_ylabel('Orbit SNR [dB]')
-        ax.set_xlabel('Time past epoch [h]')
+                t_sort = np.argsort(t)
+                t = t[t_sort]
+                sn = sn[t_sort]
 
+                axes[ind-1].plot(t/3600.0, 10*np.log10(sn), '.b')
+                axes[ind-1].set_ylabel('Orbit sample SNR [dB]')
+                axes[ind-1].set_xlabel('Time past epoch [h]')
+
+            fig_orb.savefig(output / 'orbit_sampling_snr.png')
 
 
     if 'fragmentation' in args.target:
@@ -529,14 +362,21 @@ if __name__ == '__main__':
             reses = []
 
             for fid, fragment in enumerate(cloud_data):
+                space_fragment = sorts.SpaceObject(
+                    propagator,
+                    propagator_options = propagator_options,
+                    state = fragment[4:10],
+                    epoch = fragmentation_epoch,
+                    parameters = dict(
+                        m = fragment[11],
+                        d = fragment[12],
+                    ),
+                )
                 reses.append(pool.apply_async(
-                    process_fragment, 
+                    process_object, 
                     args=(
-                        fragment,
-                        fragmentation_epoch,
+                        space_fragment,
                         t,
-                        propagator,
-                        propagator_options,
                         fragment_scheduler,
                         obs_epoch,
                     ), 
@@ -563,12 +403,19 @@ if __name__ == '__main__':
         else:
             for fid, fragment in enumerate(cloud_data):
                 pbar.update()
-                fdata, states_fragments = process_fragment(
-                    fragment,
-                    fragmentation_epoch,
-                    t,
+                space_fragment = sorts.SpaceObject(
                     propagator,
-                    propagator_options,
+                    propagator_options = propagator_options,
+                    state = fragment[4:10],
+                    epoch = fragmentation_epoch,
+                    parameters = dict(
+                        m = fragment[11],
+                        d = fragment[12],
+                    ),
+                )
+                fdata, states_fragments = process_object(
+                    space_fragment,
+                    t,
                     fragment_scheduler,
                     obs_epoch,
                 )
@@ -656,29 +503,32 @@ if __name__ == '__main__':
                     cwd=str(output),
                 )
             except subprocess.CalledProcessError as e:
-                print(e)
-                print('Could not create gif from animation frames... probably ImageMagick is missing')
+                logging.info(e)
+                logging.info('Could not create gif from animation frames... probably ImageMagick is missing')
 
-        FIX THIS
-        sn = np.array(data[0][0]['peak_snr'])
-        t = np.array(data[0][0]['peak_time'])
+        fig_frags, axes = plt.subplots(3, len(radar.rx))
+        axes = []
+        for ind in range(0, len(radar.rx)):
 
-        fig, axes = plt.subplots(1,3, figsize=(12,6))
-        ax = axes[0]
-        ax.hist(10*np.log10(sn[sn > 1]))
-        ax.set_xlabel('Max SNR [dB]')
-        ax.set_ylabel('Passes')
+            sn = np.array(fragment_pass_data[0][ind-1]['peak_snr'])
+            t = np.array(fragment_pass_data[0][ind-1]['peak_time'])
 
-        ax = axes[1]
-        ax.hist(t[sn > 1]/3600.0)
-        ax.set_xlabel('Time past epoch [h]')
-        ax.set_ylabel('Passes')
+            ax = axes[0][ind]
+            ax.hist(10*np.log10(sn[sn > 1]))
+            ax.set_xlabel('Max SNR [dB]')
+            ax.set_ylabel('Passes')
 
-        ax = axes[2]
-        ax.plot(t[sn > 1]/3600.0, 10*np.log10(sn[sn > 1]), '.b')
-        ax.set_xlabel('Time past epoch [h]')
-        ax.set_ylabel('Max SNR [dB]')
+            ax = axes[1][ind]
+            ax.hist(t[sn > 1]/3600.0)
+            ax.set_xlabel('Time past epoch [h]')
+            ax.set_ylabel('Passes')
 
+            ax = axes[2][ind]
+            ax.plot(t[sn > 1]/3600.0, 10*np.log10(sn[sn > 1]), '.b')
+            ax.set_xlabel('Time past epoch [h]')
+            ax.set_ylabel('Max SNR [dB]')
+
+        fig_frags.savefig(output / 'fragments_snr_distributions.png')
 
     # plot results
     fig1 = plt.figure(figsize=(15, 15))
