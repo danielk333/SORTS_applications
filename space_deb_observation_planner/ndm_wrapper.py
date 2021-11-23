@@ -1,7 +1,8 @@
 import subprocess
 import shutil
-import numpy as np
+import logging
 
+import numpy as np
 from astropy.time import TimeDelta
 
 import sorts
@@ -9,17 +10,19 @@ import pyorb
 
 import configuration as cfg
 
+logger = logging.getLogger('sst-cli.ndm_wrapper')
+
 
 def check_setup():
     bin_file = cfg.CACHE / 'nasa-breakup-model' / 'bin' / 'breakup'
-    return bin_file.is_file()
+    nbm_check = bin_file.is_file()
+    logger.info(f'nasa-breakup-model = {nbm_check}')
+    return nbm_check
 
 
 def setup():
     '''Setup requrements for this CLI
     '''
-
-    cfg.CACHE.mkdir(parents=False, exist_ok=True)
 
     get_cmd = ['git', 'clone', 'https://gitlab.obspm.fr/apetit/nasa-breakup-model.git']
 

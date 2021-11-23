@@ -1,24 +1,18 @@
 import pathlib
-import configparser
-import argparse
-import sys
-import subprocess
-import shutil
-import pickle
 import multiprocessing as mp
-import importlib.util
 import time
 import copy
+import logging
 
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
-from tabulate import tabulate
 from mpl_toolkits.mplot3d import Axes3D
 from astropy.time import Time, TimeDelta
 
 import sorts
-import pyorb
+
+logger = logging.getLogger('sst-cli.sst_simulation')
 
 
 class TrackingScheduler(
@@ -26,8 +20,9 @@ class TrackingScheduler(
             sorts.scheduler.ObservedParameters,
         ):
 
-    def __init__(self, radar, dwell=0.1, profiler=None, logger=None, **kwargs):
+    def __init__(self, radar, dwell=0.1, tracklet_point_spacing=1.0, profiler=None, logger=None, **kwargs):
         self.dwell = dwell
+        self.tracklet_point_spacing = tracklet_point_spacing
         super().__init__(
             radar=radar, 
             controllers=None,
@@ -36,7 +31,7 @@ class TrackingScheduler(
             **kwargs
         )
 
-    def set_tracker(self, t, states):
+    def set_tracker(self, t, states, interpolator=None):
         self.passes = self.radar.find_passes(t, states)
         passes = sorts.passes.group_passes(self.passes)
 
@@ -53,15 +48,47 @@ class TrackingScheduler(
                     if ps.end() > t_max:
                         t_max = ps.end()
 
-                inds = np.logical_and(t >= t_min, t <= t_max)
-
-                tracker = sorts.controller.Tracker(
-                    radar = self.radar, 
-                    t = t[inds], 
-                    ecefs = states[:3, inds],
-                    dwell = self.dwell,
-                )
+                if interpolator is None:
+                    inds = np.logical_and(t >= t_min, t <= t_max)
+                    tracker = sorts.controller.Tracker(
+                        radar = self.radar, 
+                        t = t[inds], 
+                        ecefs = states[:3, inds],
+                        dwell = self.dwell,
+                    )
+                else:
+                    t_track = np.arange(t_min, t_max, self.tracklet_point_spacing)
+                    track_states = interpolator.get_state(t_track)
+                    tracker = sorts.controller.Tracker(
+                        radar = self.radar, 
+                        t = t_track, 
+                        ecefs = track_states[:3, :],
+                        dwell = self.dwell,
+                    )
                 self.controllers.append(tracker)
+
+
+def _process_orbit_job(anom, space_orbit, radar, t, obs_epoch, custom_scheduler=None):
+    if custom_scheduler is None:
+        scheduler = TrackingScheduler(
+            radar = radar, 
+        )
+    else:
+        scheduler = custom_scheduler
+
+    space_orbit.orbit.anom = anom
+
+    states_orb = space_orbit.get_state(t)
+    interpolator = sorts.interpolation.Legendre8(states_orb, t)
+    scheduler.set_tracker(t, states_orb)
+    odata = scheduler.observe_passes(
+        scheduler.passes, 
+        space_object = space_orbit, 
+        epoch = obs_epoch, 
+        interpolator = interpolator,
+        snr_limit = False,
+    )
+    return odata
 
 
 def process_orbit(
@@ -71,9 +98,12 @@ def process_orbit(
             t,
             propagator,
             propagator_options,
-            scheduler,
+            radar,
+            profiler,
             obs_epoch,
             num,
+            cores=0,
+            custom_scheduler_getter=None,
         ):
     space_orbit = sorts.SpaceObject(
         propagator,
@@ -93,32 +123,90 @@ def process_orbit(
     space_orbit.orbit.degrees = True
 
     odatas = []
-    for anom in tqdm(np.linspace(0, 360.0, num=num)):
-        space_orbit.orbit.anom = anom
 
-        states_orb = space_orbit.get_state(t)
-        interpolator = sorts.interpolation.Legendre8(states_orb, t)
-        scheduler.set_tracker(t, states_orb)
-        odatas += [scheduler.observe_passes(
-            scheduler.passes, 
-            space_object = space_orbit, 
-            epoch = obs_epoch, 
-            interpolator = interpolator,
-            snr_limit = False,
-        )]
+    if cores > 1:
+        pool = mp.Pool(cores)
+        reses = []
+
+        pbar = tqdm(total=num, desc='Orbit mean anomaly sampling')
+        for ai, anom in enumerate(np.linspace(0, 360.0, num=num)):
+            if custom_scheduler_getter is not None:
+                _kwargs = dict(custom_scheduler=custom_scheduler_getter())
+            else:
+                _kwargs = {}
+
+            reses.append(pool.apply_async(
+                _process_orbit_job, 
+                args=(
+                    anom, 
+                    space_orbit.copy(),
+                    radar.copy(),
+                    t,
+                    obs_epoch,
+                ), 
+                kwds=_kwargs,
+            ))
+        pool_status = np.full((num, ), False)
+        while not np.all(pool_status):
+            for fid, res in enumerate(reses):
+                if pool_status[fid]:
+                    continue
+                time.sleep(0.001)
+                _ready = res.ready()
+                if not pool_status[fid] and _ready:
+                    pool_status[fid] = _ready
+                    pbar.update()
+
+        for fid, res in enumerate(reses):
+            odata = res.get()
+            odatas.append(odata)
+
+        pool.close()
+        pool.join()
+        pbar.close()
+
+    else:
+        if custom_scheduler_getter is not None:
+            scheduler = custom_scheduler_getter()
+        else:
+            scheduler = TrackingScheduler(
+                radar = radar, 
+                profiler = profiler, 
+                logger = logger,
+            )
+        for anom in tqdm(np.linspace(0, 360.0, num=num)):
+            space_orbit.orbit.anom = anom
+
+            states_orb = space_orbit.get_state(t)
+            interpolator = sorts.interpolation.Legendre8(states_orb, t)
+            scheduler.set_tracker(t, states_orb)
+            odatas += [scheduler.observe_passes(
+                scheduler.passes, 
+                space_object = space_orbit, 
+                epoch = obs_epoch, 
+                interpolator = interpolator,
+                snr_limit = False,
+            )]
+
     return odatas
 
 
 def process_object(
             space_object,
             t,
-            scheduler,
+            radar,
+            tracklet_point_spacing,
             obs_epoch,
         ):
 
+    scheduler = TrackingScheduler(
+        radar = radar, 
+        tracklet_point_spacing = tracklet_point_spacing,
+    )
+
     states_fragments = space_object.get_state(t)
     interpolator = sorts.interpolation.Legendre8(states_fragments, t)
-    scheduler.set_tracker(t, states_fragments)
+    scheduler.set_tracker(t, states_fragments, interpolator=interpolator)
     fdata = scheduler.observe_passes(
         scheduler.passes, 
         space_object = space_object, 
@@ -126,6 +214,7 @@ def process_object(
         interpolator = interpolator,
         snr_limit = False,
     )
+
     return fdata, states_fragments
 
 
@@ -198,6 +287,7 @@ def get_space_object_from_tle(line1, line2, parameters):
 
     bstar = bstar/(space_object.propagator.grav_model.radiusearthkm*1000.0)
     B = bstar*2.0/space_object.propagator.rho0
+    # TODO: This is ugly and wrong as shit, FIX IT
     if B < 1e-9:
         rho = 500.0
         C_D = 0.0
@@ -224,7 +314,119 @@ def get_space_object_from_tle(line1, line2, parameters):
     return space_object
 
 
-def ugly_test1():
+def observe_nbm_fragments(
+            fragmentation_epoch, 
+            cloud_data, 
+            radar,
+            tracklet_point_spacing, 
+            obs_epoch,
+            t,
+            propagator, 
+            propagator_options, 
+            cores,
+        ):
+
+    propagator_options_local = copy.deepcopy(propagator_options)
+    propagator_options_local['settings']['in_frame'] = 'TEME'
+    fragment_data = []
+    fragment_states = {}
+
+    pbar = tqdm(total=len(cloud_data), desc='Processing fragments')
+
+    if cores > 1:
+        pool = mp.Pool(cores)
+        reses = []
+
+        for fid, fragment in enumerate(cloud_data):
+            space_fragment = sorts.SpaceObject(
+                propagator,
+                propagator_options = propagator_options_local,
+                state = fragment[4:10],
+                epoch = fragmentation_epoch,
+                parameters = dict(
+                    m = fragment[11],
+                    d = fragment[12],
+                ),
+            )
+            reses.append(pool.apply_async(
+                process_object, 
+                args=(
+                    space_fragment,
+                    t,
+                    radar,
+                    tracklet_point_spacing,
+                    obs_epoch,
+                ), 
+            ))
+        pool_status = np.full((len(cloud_data), ), False)
+        while not np.all(pool_status):
+            for fid, res in enumerate(reses):
+                if pool_status[fid]:
+                    continue
+                time.sleep(0.01)
+                _ready = res.ready()
+                if not pool_status[fid] and _ready:
+                    pool_status[fid] = _ready
+                    pbar.update()
+
+        for fid, res in enumerate(reses):
+            fdata, states_fragments = res.get()
+            fragment_data.append(fdata)
+            fragment_states[f'{fid}'] = states_fragments
+
+        pool.close()
+        pool.join()
+
+    else:
+        for fid, fragment in enumerate(cloud_data):
+            pbar.update()
+            space_fragment = sorts.SpaceObject(
+                propagator,
+                propagator_options = propagator_options_local,
+                state = fragment[4:10],
+                epoch = fragmentation_epoch,
+                parameters = dict(
+                    m = fragment[11],
+                    d = fragment[12],
+                ),
+            )
+            fdata, states_fragments = process_object(
+                space_fragment,
+                t,
+                radar,
+                tracklet_point_spacing,
+                obs_epoch,
+            )
+
+            fragment_data.append(fdata)
+            fragment_states[f'{fid}'] = states_fragments
+    
+    fragment_pass_data = []
+    for txi in range(len(radar.tx)):
+        fragment_pass_data.append([])
+        for rxi in range(len(radar.rx)):
+
+            # TODO: add more statistics here
+            fragment_pass_data[txi].append(dict(
+                peak_snr = [],
+                peak_time = [],
+            ))
+            for fid, fdata in enumerate(fragment_data):
+                for fps in fdata[txi][rxi]:
+                    if fps is None:
+                        continue
+                    max_sn_ind = np.argmax(fps['snr'])
+                    fragment_pass_data[txi][rxi]['peak_snr'].append(
+                        fps['snr'][max_sn_ind]
+                    )
+                    fragment_pass_data[txi][rxi]['peak_time'].append(
+                        fps['t'][max_sn_ind]
+                    )
+
+    return fragment_pass_data, fragment_data, fragment_states
+
+
+def _ugly_test1():
     import configuration
     config = configuration.get_config(pathlib.Path('./example.conf'))
 
@@ -276,4 +478,4 @@ def ugly_test1():
 
 
 if __name__ == '__main__':
-    ugly_test1()
+    _ugly_test1()
