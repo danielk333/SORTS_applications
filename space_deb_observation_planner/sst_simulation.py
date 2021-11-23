@@ -80,9 +80,13 @@ def _process_orbit_job(anom, space_orbit, radar, t, obs_epoch, custom_scheduler=
 
     states_orb = space_orbit.get_state(t)
     interpolator = sorts.interpolation.Legendre8(states_orb, t)
-    scheduler.set_tracker(t, states_orb)
+    if isinstance(scheduler, TrackingScheduler):
+        scheduler.set_tracker(t, states_orb)
+        passes = scheduler.passes
+    else:
+        passes = scheduler.radar.find_passes(t, states_orb)
     odata = scheduler.observe_passes(
-        scheduler.passes, 
+        passes, 
         space_object = space_orbit, 
         epoch = obs_epoch, 
         interpolator = interpolator,
@@ -179,9 +183,14 @@ def process_orbit(
 
             states_orb = space_orbit.get_state(t)
             interpolator = sorts.interpolation.Legendre8(states_orb, t)
-            scheduler.set_tracker(t, states_orb)
+            if isinstance(scheduler, TrackingScheduler):
+                scheduler.set_tracker(t, states_orb)
+                passes = scheduler.passes
+            else:
+                passes = scheduler.radar.find_passes(t, states_orb)
+
             odatas += [scheduler.observe_passes(
-                scheduler.passes, 
+                passes, 
                 space_object = space_orbit, 
                 epoch = obs_epoch, 
                 interpolator = interpolator,
@@ -197,18 +206,24 @@ def process_object(
             radar,
             tracklet_point_spacing,
             obs_epoch,
+            custom_scheduler=None,
         ):
-
-    scheduler = TrackingScheduler(
-        radar = radar, 
-        tracklet_point_spacing = tracklet_point_spacing,
-    )
-
     states_fragments = space_object.get_state(t)
     interpolator = sorts.interpolation.Legendre8(states_fragments, t)
-    scheduler.set_tracker(t, states_fragments, interpolator=interpolator)
+
+    if custom_scheduler is None:
+        scheduler = TrackingScheduler(
+            radar = radar, 
+            tracklet_point_spacing = tracklet_point_spacing,
+        )
+        scheduler.set_tracker(t, states_fragments, interpolator=interpolator)
+        passes = scheduler.passes
+    else:
+        scheduler = custom_scheduler
+        passes = scheduler.radar.find_passes(t, states_fragments)
+
     fdata = scheduler.observe_passes(
-        scheduler.passes, 
+        passes, 
         space_object = space_object, 
         epoch = obs_epoch, 
         interpolator = interpolator,
@@ -324,6 +339,7 @@ def observe_nbm_fragments(
             propagator, 
             propagator_options, 
             cores,
+            custom_scheduler_getter=None,
         ):
 
     propagator_options_local = copy.deepcopy(propagator_options)
@@ -357,6 +373,9 @@ def observe_nbm_fragments(
                     tracklet_point_spacing,
                     obs_epoch,
                 ), 
+                kwds=dict(
+                    custom_scheduler=custom_scheduler_getter(),
+                ),
             ))
         pool_status = np.full((len(cloud_data), ), False)
         while not np.all(pool_status):
@@ -396,6 +415,7 @@ def observe_nbm_fragments(
                 radar,
                 tracklet_point_spacing,
                 obs_epoch,
+                custom_scheduler=custom_scheduler_getter(),
             )
 
             fragment_data.append(fdata)

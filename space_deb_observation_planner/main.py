@@ -106,39 +106,59 @@ def run_object_planner(args, config, cores, radar, output, CACHE, profiler=None)
 
     interpolator = sorts.interpolation.Legendre8(states, t)
 
-    scheduler = sst_simulation.TrackingScheduler(
-        radar = radar, 
-        profiler = profiler, 
-        logger = logger,
-    )
-    scheduler.set_tracker(t, states, interpolator=interpolator)
-    
-    tracking_data = scheduler.observe_passes(
-        scheduler.passes, 
-        space_object = space_object, 
-        epoch = obs_epoch, 
-        interpolator = interpolator,
-        snr_limit = False,
-    )
+    scheduler_modes = [None]
+    custom_scheduler_getter = get_custom_scheduler_getter(config, output)
+    if custom_scheduler_getter is not None:
+        scheduler_modes.append(custom_scheduler_getter)
 
-    object_output = output / 'object'
-    object_output.mkdir(exist_ok=True)
+    for mode in scheduler_modes:
+        if mode is not None:
+            logger.info('Running custom scheduler scheduler')
+            file_modifier = 'custom_scheduler_'
+            scheduler = mode()
+            passes = scheduler.radar.find_passes(t, states)
+        else:
+            logger.info('Running optimal tracking scheduler')
+            file_modifier = ''
 
-    with open(object_output / 'tracking_data.pickle', 'wb') as fh:
-        pickle.dump(tracking_data, fh)
+            scheduler = sst_simulation.TrackingScheduler(
+                radar = radar, 
+                profiler = profiler, 
+                logger = logger,
+            )
+            scheduler.set_tracker(t, states, interpolator=interpolator)
+            passes = scheduler.passes
+        
+        tracking_data = scheduler.observe_passes(
+            passes, 
+            space_object = space_object, 
+            epoch = obs_epoch, 
+            interpolator = interpolator,
+            snr_limit = False,
+        )
 
-    figsize = (
-        config.custom_getint('general', 'figsize-x'),
-        config.custom_getint('general', 'figsize-y'),
-    )
-    figsize = tuple([x for x in figsize if x is not None])
-    if len(figsize) < 2:
-        figsize = None
+        object_output = output / 'object'
+        object_output.mkdir(exist_ok=True)
 
-    fig1, fig2 = plotting.observed_pass_data(radar, tracking_data, figsize=figsize)
+        with open(object_output / f'{file_modifier}tracking_data.pickle', 'wb') as fh:
+            pickle.dump(tracking_data, fh)
 
-    fig1.savefig(object_output / 'tracking_kv_range.png')
-    fig2.savefig(object_output / 'tracking_snr.png')
+        figsize = (
+            config.custom_getint('general', 'figsize-x'),
+            config.custom_getint('general', 'figsize-y'),
+        )
+        figsize = tuple([x for x in figsize if x is not None])
+        if len(figsize) < 2:
+            figsize = None
+
+        fig1, fig2 = plotting.observed_pass_data(
+            scheduler.radar, 
+            tracking_data, 
+            obs_epoch=obs_epoch, 
+            figsize=figsize,
+        )
+        fig1.savefig(object_output / f'{file_modifier}tracking_kv_range.png')
+        fig2.savefig(object_output / f'{file_modifier}tracking_snr.png')
 
 
 def run_fragmentation_planner(args, config, cores, radar, output, CACHE, profiler=None):
@@ -190,65 +210,86 @@ def run_fragmentation_planner(args, config, cores, radar, output, CACHE, profile
         with open(cache_file, 'wb') as fh:
             pickle.dump([cloud_data, header], fh)
 
+        nbm_folder = fragmentation_output / 'nbm_results'
+        nbm_folder.mkdir(parents=True, exist_ok=True)
+        nbm_results = (cfg.MODEL_DIR / 'bin' / 'outputs').glob('*.txt')
+        for file in nbm_results:
+            logger.info(f'Moving nasa-breakup-model result to output {nbm_folder / file.name}')
+            shutil.copy(str(file), str(nbm_folder / file.name))
+
+        ndm_plotting.plot(cfg.MODEL_DIR / 'bin' / 'outputs', nbm_folder / 'plots')
+
     fdt = TimeDelta(fragmentation_time*3600.0, format='sec')
     fragmentation_epoch = space_object.epoch + fdt
 
-    nbm_folder = fragmentation_output / 'nbm_results'
-    nbm_folder.mkdir(parents=True, exist_ok=True)
-    nbm_results = (cfg.MODEL_DIR / 'bin' / 'outputs').glob('*.txt')
-    for file in nbm_results:
-        logger.info(f'Moving nasa-breakup-model result to output {nbm_folder / file.name}')
-        shutil.copy(str(file), str(nbm_folder / file.name))
-
-    ndm_plotting.plot(cfg.MODEL_DIR / 'bin' / 'outputs', nbm_folder / 'plots')
-
     tracklet_point_spacing = 10.0
 
-    cache_file = fragmentation_output / 'fragment_pass_data.pickle'
-    if config.getboolean('general', 'use-cache') and cache_file.is_file():
-        logger.info('Using nbm fragment observation cache')
-        with open(fragmentation_output / 'fragment_pass_data.pickle', 'rb') as fh:
-            fragment_pass_data = pickle.load(fh)
-        with open(fragmentation_output / 'fragment_data.pickle', 'rb') as fh:
-            fragment_data = pickle.load(fh)
-        fragment_states = np.load(fragmentation_output / 'fragment_states.npz')
+    scheduler_modes = [None]
+    custom_scheduler_getter = get_custom_scheduler_getter(config, output)
+    if custom_scheduler_getter is not None:
+        scheduler_modes.append(custom_scheduler_getter)
 
-    else:
-        logger.info('Simulating fragment observation')
+    for mode in scheduler_modes:
+        if mode is not None:
+            logger.info('Running custom scheduler scheduler')
+            file_modifier = 'custom_scheduler_'
+            _radar = mode().radar
+        else:
+            logger.info('Running optimal tracking scheduler')
+            file_modifier = ''
+            _radar = radar
 
-        fragment_pass_data, fragment_data, fragment_states = sst_simulation.observe_nbm_fragments(
-            fragmentation_epoch, 
-            cloud_data, 
-            radar,
-            tracklet_point_spacing, 
-            obs_epoch,
-            t,
-            propagator, 
-            propagator_options, 
-            cores,
+        cache_file = fragmentation_output / f'{file_modifier}fragment_pass_data.pickle'
+        if config.getboolean('general', 'use-cache') and cache_file.is_file():
+            logger.info('Using nbm fragment observation cache')
+            with open(fragmentation_output / f'{file_modifier}fragment_pass_data.pickle', 'rb') as fh:
+                fragment_pass_data = pickle.load(fh)
+            with open(fragmentation_output / f'{file_modifier}fragment_data.pickle', 'rb') as fh:
+                fragment_data = pickle.load(fh)
+            fragment_states = np.load(fragmentation_output / f'{file_modifier}fragment_states.npz')
+
+        else:
+            logger.info('Simulating fragment observation')
+
+            fragment_pass_data, fragment_data, fragment_states = sst_simulation.observe_nbm_fragments(
+                fragmentation_epoch, 
+                cloud_data, 
+                _radar,
+                tracklet_point_spacing, 
+                obs_epoch,
+                t,
+                propagator, 
+                propagator_options, 
+                cores,
+                custom_scheduler_getter=mode,
+            )
+
+            with open(fragmentation_output / f'{file_modifier}fragment_pass_data.pickle', 'wb') as fh:
+                pickle.dump(fragment_pass_data, fh)
+            with open(fragmentation_output / f'{file_modifier}fragment_data.pickle', 'wb') as fh:
+                pickle.dump(fragment_data, fh)
+            np.savez(fragmentation_output / f'{file_modifier}fragment_states.npz', **fragment_states)
+
+        if mode is None:
+            if config.getboolean('fragmentation', 'animate'):
+                output_anim = fragmentation_output / 'animation'
+                output_anim.mkdir(exist_ok=True)
+                plotting.animate_fragments(t, fragment_states, output_anim)
+
+        figsize = (
+            config.custom_getint('general', 'figsize-x'),
+            config.custom_getint('general', 'figsize-y'),
         )
+        figsize = tuple([x for x in figsize if x is not None])
+        if len(figsize) < 2:
+            figsize = None
 
-        with open(fragmentation_output / 'fragment_pass_data.pickle', 'wb') as fh:
-            pickle.dump(fragment_pass_data, fh)
-        with open(fragmentation_output / 'fragment_data.pickle', 'wb') as fh:
-            pickle.dump(fragment_data, fh)
-        np.savez(fragmentation_output / 'fragment_states.npz', **fragment_states)
+        fig_frags, axes = plotting.fragment_stats(_radar, fragment_pass_data, figsize=figsize)
+        fig_frags.savefig(fragmentation_output / f'{file_modifier}fragments_snr_distributions.png')
 
-    if config.getboolean('fragmentation', 'animate'):
-        output_anim = fragmentation_output / 'animation'
-        output_anim.mkdir(exist_ok=True)
-        plotting.animate_fragments(t, fragment_states, output_anim)
-
-    figsize = (
-        config.custom_getint('general', 'figsize-x'),
-        config.custom_getint('general', 'figsize-y'),
-    )
-    figsize = tuple([x for x in figsize if x is not None])
-    if len(figsize) < 2:
-        figsize = None
-
-    fig_frags, axes = plotting.fragment_stats(radar, fragment_pass_data, figsize=figsize)
-    fig_frags.savefig(fragmentation_output / 'fragments_snr_distributions.png')
+        fig_frags, axes = plotting.fragment_stats(_radar, fragment_pass_data, obs_epoch=obs_epoch, figsize=figsize)
+        fig_frags.autofmt_xdate()
+        fig_frags.savefig(fragmentation_output / f'{file_modifier}fragments_snr_distributions_epoch.png')
 
 
 def run_orbit_planner(args, config, cores, radar, output, CACHE, profiler=None):
@@ -280,26 +321,35 @@ def run_orbit_planner(args, config, cores, radar, output, CACHE, profiler=None):
         if mode is not None:
             logger.info('Running custom scheduler scheduler')
             file_modifier = 'custom_scheduler_'
+            _radar = mode().radar
         else:
             logger.info('Running optimal tracking scheduler')
             file_modifier = ''
+            _radar = radar
         
-        orbit_samples_data = sst_simulation.process_orbit(
-            orbit_state,
-            space_object.parameters,
-            space_object.epoch,
-            t,
-            propagator,
-            propagator_options,
-            radar,
-            profiler,
-            obs_epoch,
-            config.getint('orbit', 'samples'),
-            cores=cores,
-            custom_scheduler_getter=mode,
-        )
-        with open(orbit_output / f'{file_modifier}orbit_data.pickle', 'wb') as fh:
-            pickle.dump(orbit_samples_data, fh)
+        cache_file = orbit_output / f'{file_modifier}orbit_data.pickle'
+        if config.getboolean('general', 'use-cache') and cache_file.is_file():
+            logger.info('Using orbit samples cache')
+            with open(cache_file, 'rb') as fh:
+                orbit_samples_data = pickle.load(fh)
+        else:
+            logger.info('Processing orbit samples')
+            orbit_samples_data = sst_simulation.process_orbit(
+                orbit_state,
+                space_object.parameters,
+                space_object.epoch,
+                t,
+                propagator,
+                propagator_options,
+                radar,
+                profiler,
+                obs_epoch,
+                config.getint('orbit', 'samples'),
+                cores=cores,
+                custom_scheduler_getter=mode,
+            )
+            with open(cache_file, 'wb') as fh:
+                pickle.dump(orbit_samples_data, fh)
 
         figsize = (
             config.custom_getint('general', 'figsize-x'),
@@ -309,11 +359,11 @@ def run_orbit_planner(args, config, cores, radar, output, CACHE, profiler=None):
         if len(figsize) < 2:
             figsize = None
 
-        fig_orb, axes = plotting.orbit_sampling(radar, orbit_samples_data, obs_epoch=obs_epoch, figsize=figsize)
+        fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, obs_epoch=obs_epoch, figsize=figsize)
         fig_orb.autofmt_xdate()
         fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_snr_epoch.png')
 
-        fig_orb, axes = plotting.orbit_sampling(radar, orbit_samples_data, figsize=figsize)
+        fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, figsize=figsize)
         fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_snr.png')
 
 
@@ -418,23 +468,34 @@ def get_custom_scheduler_getter(config, output):
 
     custom_scheduler_file = config.get('general', 'scheduler-file')
 
-    if custom_scheduler_file is not None:
-        scheduler_file_path = pathlib.Path(custom_scheduler_file)
-        spec = importlib.util.spec_from_file_location(
-            "custom_scheduler_module",
-            str(scheduler_file_path.resolve()),
-        )
-        custom_scheduler_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(custom_scheduler_module)
-        custom_scheduler_getter = custom_scheduler_module.get_scheduler
+    if custom_scheduler_file is None or not custom_scheduler_file:
+        custom_scheduler_getter = None
+        logger.info('No custom scheduler, using optimal SNR tracking')
+    else:
+        import custom_scheduler
+        custom_scheduler_getter = custom_scheduler.get_scheduler
         logger.info('Custom scheduler loaded, adding observation prediction')
         logger.info(custom_scheduler_getter)
 
-        shutil.copy(scheduler_file_path, output / scheduler_file_path.name)
-        logger.info(f'Creating copy of scheduler: {output / scheduler_file_path.name}')
-    else:
-        custom_scheduler_getter = None
-        logger.info('No custom scheduler, using optimal SNR tracking')
+    # this cannot be pickled?
+    # -----
+    # if custom_scheduler_file is not None:
+    #     scheduler_file_path = pathlib.Path(custom_scheduler_file)
+    #     spec = importlib.util.spec_from_file_location(
+    #         "custom_scheduler_module",
+    #         str(scheduler_file_path.resolve()),
+    #     )
+    #     custom_scheduler_module = importlib.util.module_from_spec(spec)
+    #     spec.loader.exec_module(custom_scheduler_module)
+    #     custom_scheduler_getter = custom_scheduler_module.get_scheduler
+    #     logger.info('Custom scheduler loaded, adding observation prediction')
+    #     logger.info(custom_scheduler_getter)
+
+    #     shutil.copy(scheduler_file_path, output / scheduler_file_path.name)
+    #     logger.info(f'Creating copy of scheduler: {output / scheduler_file_path.name}')
+    # else:
+    #     custom_scheduler_getter = None
+    #     logger.info('No custom scheduler, using optimal SNR tracking')
 
     return custom_scheduler_getter
 

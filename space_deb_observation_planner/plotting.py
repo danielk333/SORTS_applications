@@ -1,6 +1,6 @@
-import pathlib
-import subprocess
 import logging
+import multiprocessing as mp
+import subprocess
 
 from tqdm import tqdm
 import numpy as np
@@ -57,13 +57,21 @@ def orbit_sampling(radar, orbit_samples_data, obs_epoch=None, figsize=None):
     return fig_orb, axes
 
 
-def fragment_stats(radar, fragment_pass_data, figsize=None):
+def fragment_stats(radar, fragment_pass_data, obs_epoch=None, figsize=None):
 
     fig_frags, axes = plt.subplots(3, len(radar.rx), figsize=figsize)
+    if len(axes.shape) == 1:
+        axes.shape = (3, 1)
+
     for ind in range(0, len(radar.rx)):
 
         sn = np.array(fragment_pass_data[0][ind]['peak_snr'])
         t = np.array(fragment_pass_data[0][ind]['peak_time'])
+
+        if obs_epoch is not None:
+            t = (obs_epoch + TimeDelta(t, format='sec')).datetime
+        else:
+            t = t/3600.0
 
         ax = axes[0, ind]
         ax.hist(10*np.log10(sn[sn > 1]))
@@ -71,63 +79,125 @@ def fragment_stats(radar, fragment_pass_data, figsize=None):
         ax.set_ylabel('Passes')
 
         ax = axes[1, ind]
-        ax.hist(t[sn > 1]/3600.0)
+        ax.hist(t[sn > 1])
         ax.set_xlabel('Time past epoch [h]')
         ax.set_ylabel('Passes')
 
         ax = axes[2, ind]
-        ax.plot(t[sn > 1]/3600.0, 10*np.log10(sn[sn > 1]), '.b')
+        ax.plot(t[sn > 1], 10*np.log10(sn[sn > 1]), '.b')
         ax.set_xlabel('Time past epoch [h]')
         ax.set_ylabel('Max SNR [dB]')
 
     return fig_frags, axes
 
 
-def animate_fragments(t, fragment_states, output_anim):
-
+def animate_fragments_frames(
+            t, 
+            fragment_states, 
+            output_anim, 
+            frame_range, 
+            cnt_range, 
+            plot_radius, 
+            max_offset,
+        ):
     fig_frag = plt.figure(figsize=(15, 15))
     ax = fig_frag.add_subplot(111, projection='3d')
-    
-    max_offset = 10
-    step_size = 100
-    for tid in tqdm(range(0, len(t), step_size)):
+
+    size_fixed = False
+    offset = 0
+
+    lns = [None for x in fragment_states]
+    lnps = [None for x in fragment_states]
+
+    sorts.plotting.grid_earth(ax)
+    pbar = tqdm(total=len(frame_range))
+    for tid, cnt in zip(frame_range, cnt_range):
+        pbar.update(1)
+        out_frame = output_anim / f'frag_anim{cnt}.png'
+        if out_frame.is_file():
+            continue
+
         if tid < max_offset:
             offset = tid
         else:
             offset = offset
-        ax.clear()
-        sorts.plotting.grid_earth(ax)
-        for fid, states_fragments in fragment_states.items():
-            ax.plot(
-                states_fragments[0, (tid - offset):tid], 
-                states_fragments[1, (tid - offset):tid], 
-                states_fragments[2, (tid - offset):tid], 
-                'b', alpha=0.2,
-            )
-            ax.plot(
-                states_fragments[0, tid], 
-                states_fragments[1, tid], 
-                states_fragments[2, tid], 
-                '.r', alpha=1,
-            )
-        if tid == 0:
-            sorts.plotting.set_axes_equal(ax)
-        fig_frag.savefig(output_anim / f'frag_anim{tid}.png')
+
+        for fid, (name, states_fragments) in enumerate(fragment_states.items()):
+            if lns[fid] is None:
+                lns[fid], = ax.plot(
+                    states_fragments[0, (tid - offset):tid], 
+                    states_fragments[1, (tid - offset):tid], 
+                    states_fragments[2, (tid - offset):tid], 
+                    '-b', alpha=0.3,
+                )
+                lnps[fid], = ax.plot(
+                    states_fragments[0, tid:(tid+1)], 
+                    states_fragments[1, tid:(tid+1)], 
+                    states_fragments[2, tid:(tid+1)], 
+                    '.r', alpha=1,
+                )
+            else:
+                lns[fid].set_data(
+                    states_fragments[0, (tid - offset):tid], 
+                    states_fragments[1, (tid - offset):tid],
+                )
+                lns[fid].set_3d_properties(states_fragments[2, (tid - offset):tid])
+                lnps[fid].set_data(
+                    states_fragments[0, tid:(tid+1)], 
+                    states_fragments[1, tid:(tid+1)],
+                )
+                lnps[fid].set_3d_properties(states_fragments[2, tid:(tid+1)])
+
+        if not size_fixed:
+            size_fixed = True
+        
+            ax.set_xlim3d([-plot_radius, plot_radius])
+            ax.set_ylim3d([-plot_radius, plot_radius])
+            ax.set_zlim3d([-plot_radius, plot_radius])
+
+        fig_frag.savefig(out_frame)
     
+    pbar.close()
     plt.close(fig_frag)
 
+
+# TODO: implement this with multi-core
+def animate_fragments(t, fragment_states, output_anim):
+
+    plot_radius = []
+    for fid, states_fragments in fragment_states.items():
+        plot_radius += [np.abs(states_fragments[:3, :]).max()]
+    plot_radius = max(plot_radius)
+
+    step_size = 100
+    max_offset = 10
+    slow_start = 400
+
+    frame_range = list(range(0, slow_start)) + list(range(slow_start, len(t), step_size))
+    cnt_range = range(len(frame_range))
+
+    animate_fragments_frames(
+        t, 
+        fragment_states, 
+        output_anim, 
+        frame_range, 
+        cnt_range,
+        plot_radius,
+        max_offset,
+    )
+    
     try:
-        conv_path = pathlib.Path(".") / "animation" / "*.png"
         subprocess.check_call(
-            f'convert -delay 20 -loop 0 {str(conv_path)} animation.gif', 
-            cwd=str(output_anim),
+            'ffmpeg -start_number 0 -r 4 -i frag_anim%d.png -vcodec mpeg4 ../animation.avi', 
+            cwd=str(output_anim.resolve()),
+            shell=True,
         )
     except subprocess.CalledProcessError as e:
         logger.info(e)
-        logger.info('Could not create gif from animation frames... probably ImageMagick is missing')
+        logger.info('Could not create movie from animation frames... probably ffmpeg is missing')
 
 
-def observed_pass_data(radar, data, figsize=None):
+def observed_pass_data(radar, data, obs_epoch=None, figsize=None):
 
     # plot results
     fig1 = plt.figure(figsize=figsize)
@@ -144,15 +214,22 @@ def observed_pass_data(radar, data, figsize=None):
         for rxi, rx_d in enumerate(tx_d):
             for dati, dat in enumerate(rx_d):
                 axes[rxi].plot(dat['tx_k'][0, :], dat['tx_k'][1, :], label=f'Pass {dati}')
+
+                if obs_epoch is None:
+                    legend = f'Pass {dati}'
+                else:
+                    start_epoch = obs_epoch + TimeDelta(dat['t'].min(), format='sec')
+                    legend = f'Pass {dati} - Start: {start_epoch.iso}'
+
                 sn_axes[rxi].plot(
                     (dat['t'] - np.min(dat['t']))/(3600.0*24), 
                     10*np.log10(dat['snr']),
-                    label=f'Pass {dati}',
+                    label=legend,
                 )
                 r_axes[rxi].plot(
                     (dat['t'] - np.min(dat['t']))/(3600.0*24), 
                     (dat['range']*0.5)*1e-3,
-                    label=f'Pass {dati}',
+                    label=legend,
                 )
 
     axes[0].legend()
