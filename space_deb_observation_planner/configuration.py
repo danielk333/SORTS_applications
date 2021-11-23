@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
     'general': {
         'orekit-data': None,
         'epoch': None,
-        'scheduler-file': './.cache/test/scheduler.py',
+        'scheduler-file': None,
         't_start': '0',
         't_end': 48.0,
         't_step': '10.0',
