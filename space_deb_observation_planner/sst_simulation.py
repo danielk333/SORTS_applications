@@ -212,6 +212,7 @@ def get_space_object_from_tle(line1, line2, parameters):
         m = rho*4.0/3.0*np.pi*r**3
 
     space_object.parameters.update({
+        'B': B,
         'A': A,
         'm': m,
         'd': r*2.0,
@@ -245,7 +246,7 @@ def ugly_test1():
 
     states_tle = space_object_tle.get_state(t)
 
-    space_object = convert_tle_so_to_state_so(space_object_tle, samples=1000, sample_time=60*90.0)
+    space_object = convert_tle_so_to_state_so(space_object_tle, samples=100, sample_time=60*90.0)
     space_object_bad = convert_tle_so_to_state_so(space_object_tle, samples=1)
 
     states_itrs = space_object.get_state(t)
