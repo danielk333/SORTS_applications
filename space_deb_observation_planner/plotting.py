@@ -117,7 +117,7 @@ def animate_fragments_frames(
         if out_frame.is_file():
             continue
 
-        if tid < max_offset:
+        if tid <= max_offset:
             offset = tid
         else:
             offset = offset
@@ -128,7 +128,7 @@ def animate_fragments_frames(
                     states_fragments[0, (tid - offset):tid], 
                     states_fragments[1, (tid - offset):tid], 
                     states_fragments[2, (tid - offset):tid], 
-                    '-b', alpha=0.3,
+                    '-b', alpha=0.2,
                 )
                 lnps[fid], = ax.plot(
                     states_fragments[0, tid:(tid+1)], 
@@ -162,7 +162,7 @@ def animate_fragments_frames(
 
 
 # TODO: implement this with multi-core
-def animate_fragments(t, fragment_states, output_anim):
+def animate_fragments(t, fragment_states, output_anim, cores=0):
 
     plot_radius = []
     for fid, states_fragments in fragment_states.items():
@@ -170,25 +170,50 @@ def animate_fragments(t, fragment_states, output_anim):
     plot_radius = max(plot_radius)
 
     step_size = 100
-    max_offset = 10
+    max_offset = 100
     slow_start = 400
 
-    frame_range = list(range(0, slow_start)) + list(range(slow_start, len(t), step_size))
-    cnt_range = range(len(frame_range))
+    if cores > 1:
+        processes = []
+        all_frame_range = np.array(list(range(0, slow_start)) + list(range(slow_start, len(t), step_size)))
+        for pid in range(cores):
+            cnt_range = np.array(range(pid, len(all_frame_range), cores))
+            frame_range = all_frame_range[cnt_range]
 
-    animate_fragments_frames(
-        t, 
-        fragment_states, 
-        output_anim, 
-        frame_range, 
-        cnt_range,
-        plot_radius,
-        max_offset,
-    )
+            processes.append(mp.Process(
+                target=animate_fragments_frames, 
+                args=(
+                    t, 
+                    fragment_states, 
+                    output_anim, 
+                    frame_range, 
+                    cnt_range,
+                    plot_radius,
+                    max_offset,
+                ),
+            ))
+            processes[-1].start()
+
+        for p in processes:
+            p.join()
+
+    else:
+        frame_range = list(range(0, slow_start)) + list(range(slow_start, len(t), step_size))
+        cnt_range = range(len(frame_range))
+
+        animate_fragments_frames(
+            t, 
+            fragment_states, 
+            output_anim, 
+            frame_range, 
+            cnt_range,
+            plot_radius,
+            max_offset,
+        )
     
     try:
         subprocess.check_call(
-            'ffmpeg -start_number 0 -r 4 -i frag_anim%d.png -vcodec mpeg4 ../animation.avi', 
+            'ffmpeg -start_number 0 -r 6 -i frag_anim%d.png -vcodec mpeg4 ../animation.avi', 
             cwd=str(output_anim.resolve()),
             shell=True,
         )

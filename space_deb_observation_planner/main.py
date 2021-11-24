@@ -274,7 +274,7 @@ def run_fragmentation_planner(args, config, cores, radar, output, CACHE, profile
             if config.getboolean('fragmentation', 'animate'):
                 output_anim = fragmentation_output / 'animation'
                 output_anim.mkdir(exist_ok=True)
-                plotting.animate_fragments(t, fragment_states, output_anim)
+                plotting.animate_fragments(t, fragment_states, output_anim, cores=cores)
 
         figsize = (
             config.custom_getint('general', 'figsize-x'),
