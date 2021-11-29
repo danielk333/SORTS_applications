@@ -9,7 +9,6 @@ import pathlib
 import argparse
 import pickle
 import shutil
-import importlib.util
 import logging
 import sys
 

@@ -364,6 +364,10 @@ def observe_nbm_fragments(
                     d = fragment[12],
                 ),
             )
+            if custom_scheduler_getter is not None:
+                custom_scheduler = custom_scheduler_getter()
+            else:
+                custom_scheduler = None
             reses.append(pool.apply_async(
                 process_object, 
                 args=(
@@ -374,7 +378,7 @@ def observe_nbm_fragments(
                     obs_epoch,
                 ), 
                 kwds=dict(
-                    custom_scheduler=custom_scheduler_getter(),
+                    custom_scheduler=custom_scheduler,
                 ),
             ))
         pool_status = np.full((len(cloud_data), ), False)
@@ -409,13 +413,17 @@ def observe_nbm_fragments(
                     d = fragment[12],
                 ),
             )
+            if custom_scheduler_getter is not None:
+                custom_scheduler = custom_scheduler_getter()
+            else:
+                custom_scheduler = None
             fdata, states_fragments = process_object(
                 space_fragment,
                 t,
                 radar,
                 tracklet_point_spacing,
                 obs_epoch,
-                custom_scheduler=custom_scheduler_getter(),
+                custom_scheduler=custom_scheduler,
             )
 
             fragment_data.append(fdata)
