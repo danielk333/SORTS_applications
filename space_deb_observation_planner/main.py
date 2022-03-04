@@ -368,7 +368,7 @@ def run_orbit_planner(args, config, cores, radar, output, CACHE, profiler=None):
 
 def get_base_object(config, args):
     
-    if args.propagator.startswith('SGP4'):
+    if args.propagator.lower().startswith('sgp4'):
         propagator = sorts.propagator.SGP4
         propagator_options = dict(
             settings=dict(
@@ -377,7 +377,7 @@ def get_base_object(config, args):
                 tle_input=False,
             )
         )
-    elif args.propagator == 'Orekit':
+    elif args.propagator.lower() == 'orekit':
         orekit_data = config.get('general', 'orekit-data')
         if orekit_data is None:
             orekit_data = CACHE / 'orekit-data-master.zip'
@@ -421,9 +421,9 @@ def get_base_object(config, args):
             line2, 
             parameters,
         )
-        if args.propagator == 'SGP4':
+        if args.propagator.lower() == 'sgp4':
             space_object = space_object_tle
-        elif args.propagator == 'SGP4-state':
+        elif args.propagator.lower() == 'sgp4-state':
             space_object = sst_simulation.convert_tle_so_to_state_so(
                 space_object_tle, 
                 propagator = propagator,
