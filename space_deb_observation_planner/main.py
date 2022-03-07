@@ -383,6 +383,14 @@ def get_base_object(config, args):
                 tle_input=False,
             )
         )
+    elif args.propagator.lower() == 'kepler':
+        propagator = sorts.propagator.Kepler
+        propagator_options = dict(
+            settings=dict(
+                in_frame='TEME',
+                out_frame='ITRS',
+            )
+        )
     elif args.propagator.lower() == 'orekit':
         orekit_data = config.get('general', 'orekit-data')
         if orekit_data is None:
@@ -435,6 +443,13 @@ def get_base_object(config, args):
                 propagator = propagator,
                 propagator_options = propagator_options,
                 samples=500, 
+            )
+        else:
+            space_object = sst_simulation.convert_tle_so_to_state_so(
+                space_object_tle, 
+                propagator = propagator,
+                propagator_options = propagator_options,
+                samples=1, 
             )
     else:
         state = np.array([

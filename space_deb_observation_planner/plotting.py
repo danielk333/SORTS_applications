@@ -17,7 +17,7 @@ logger = logging.getLogger('sst-cli.plotting')
 def orbit_sampling(radar, orbit_samples_data, snr_mode='max', obs_epoch=None, figsize=None):
 
     txi = 0
-    optimal_dt = 10.0  # sec
+    optimal_dt = 3*10.0  # sec
 
     fig_orb = plt.figure(figsize=figsize)
     axes = []
@@ -67,11 +67,11 @@ def orbit_sampling(radar, orbit_samples_data, snr_mode='max', obs_epoch=None, fi
 
         if snr_mode == 'optimal':
             t_optimize = np.arange(t[0], t[-1] + optimal_dt, optimal_dt, dtype=np.float64)
-            t_new = np.empty_like(t_optimize)
-            sn_new = np.empty_like(t_optimize)
-            az_new = np.empty_like(t_optimize)
-            el_new = np.empty_like(t_optimize)
-            for ind in range(len(t_optimize) - 1):
+            t_new = np.empty((len(t_optimize) - 1,), dtype=np.float64)
+            sn_new = np.empty_like(t_new)
+            az_new = np.empty_like(t_new)
+            el_new = np.empty_like(t_new)
+            for ind in range(len(t_new)):
                 selector = np.logical_and(t >= t_optimize[ind], t <= t_optimize[ind+1])
                 if np.any(selector):
                     sn_max = np.argmax(sn[selector])

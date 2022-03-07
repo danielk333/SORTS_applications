@@ -11,6 +11,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from astropy.time import Time, TimeDelta
 
 import sorts
+import pyorb
 
 logger = logging.getLogger('sst-cli.sst_simulation')
 
@@ -263,6 +264,9 @@ def convert_tle_so_to_state_so(
     if 'settings' not in propagator_options:
         propagator_options['settings'] = {}
 
+    parameters = copy.deepcopy(tle_space_object.parameters)
+    parameters['M0'] = pyorb.M_earth
+
     propagator_options['settings']['in_frame'] = 'TEME'
     space_object = sorts.SpaceObject(
         propagator,
@@ -273,7 +277,7 @@ def convert_tle_so_to_state_so(
         epoch = copy.deepcopy(tle_space_object.epoch),
         state = state_TEME,
         oid = tle_space_object.oid,
-        parameters = copy.deepcopy(tle_space_object.parameters),
+        parameters = parameters,
     )
 
     return space_object
