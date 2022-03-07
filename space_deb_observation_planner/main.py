@@ -360,10 +360,16 @@ def run_orbit_planner(args, config, cores, radar, output, CACHE, profiler=None):
 
         fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, obs_epoch=obs_epoch, figsize=figsize)
         fig_orb.autofmt_xdate()
-        fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_snr_epoch.png')
+        fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_max_snr_epoch.png')
 
         fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, figsize=figsize)
+        fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_max_snr.png')
+
+        fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, snr_mode='all', figsize=figsize)
         fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_snr.png')
+
+        fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, snr_mode='optimal', figsize=figsize)
+        fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_best_snr.png')
 
 
 def get_base_object(config, args):
@@ -465,7 +471,7 @@ def get_base_object(config, args):
 
 def get_custom_scheduler_getter(config, output):
 
-    custom_scheduler_file = config.get('general', 'scheduler-file')
+    custom_scheduler_file = config.getboolean('general', 'scheduler-file')
 
     if custom_scheduler_file is None or not custom_scheduler_file:
         custom_scheduler_getter = None
@@ -553,10 +559,15 @@ if __name__ == '__main__':
         nargs='+',
         help='Type of target for observation',
     )
+    parser.add_argument('--txi', type=int, default=[0], nargs='?', help='TX indecies to use')
+    parser.add_argument('--rxi', type=int, default=[0], nargs='?', help='TX indecies to use')
 
     args = parser.parse_args()
 
     radar = getattr(sorts.radars, args.radar)
+
+    radar.tx = [tx for txi, tx in enumerate(radar.tx) if txi in args.txi]
+    radar.rx = [rx for rxi, rx in enumerate(radar.rx) if rxi in args.rxi]
 
     output = pathlib.Path(args.output)
     output.mkdir(parents=True, exist_ok=True)

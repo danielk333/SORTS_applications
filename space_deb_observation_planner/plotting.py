@@ -9,37 +9,86 @@ from mpl_toolkits.mplot3d import Axes3D
 from astropy.time import TimeDelta
 
 import sorts
+import pyant
 
 logger = logging.getLogger('sst-cli.plotting')
 
 
-def orbit_sampling(radar, orbit_samples_data, obs_epoch=None, figsize=None):
+def orbit_sampling(radar, orbit_samples_data, snr_mode='max', obs_epoch=None, figsize=None):
 
     txi = 0
+    optimal_dt = 10.0  # sec
 
     fig_orb = plt.figure(figsize=figsize)
     axes = []
     for rxi in range(1, len(radar.rx)+1):
         axes.append([])
-        axes[rxi-1].append(fig_orb.add_subplot(2, len(radar.rx), rxi))
-        axes[rxi-1].append(fig_orb.add_subplot(2, len(radar.rx), len(radar.rx)+rxi))
+        axes[rxi-1].append(fig_orb.add_subplot(3, len(radar.rx), 0*len(radar.rx)+rxi))
+        axes[rxi-1].append(fig_orb.add_subplot(3, len(radar.rx), 1*len(radar.rx)+rxi))
+        axes[rxi-1].append(fig_orb.add_subplot(3, len(radar.rx), 2*len(radar.rx)+rxi))
 
-        sn = []
         t = []
+        sn = []
+        az = []
         el = []
         for oid in range(len(orbit_samples_data)):
             for ind, d in enumerate(orbit_samples_data[oid][txi][rxi-1]):
-                snm = np.argmax(d['snr'])
-                sn.append(d['snr'][snm])
-                t.append(d['t'][snm])
-                el.append(np.degrees(np.arcsin(d['rx_k'][2, snm])))
-        t = np.array(t)
-        sn = np.array(t)
-        el = np.array(el)
+                if snr_mode == 'max':
+                    snm = np.argmax(d['snr'])
+                    sn.append(d['snr'][snm])
+                    t.append(d['t'][snm])
+                    azel = pyant.coordinates.cart_to_sph(d['rx_k'][:, snm], radians=False)
+                    az.append(azel[0])
+                    el.append(azel[1])
+                elif snr_mode in ['all', 'optimal']:
+                    sn.append(d['snr'].copy())
+                    t.append(d['t'].copy())
+                    azel = pyant.coordinates.cart_to_sph(d['rx_k'], radians=False)
+                    az.append(azel[0, ...])
+                    el.append(azel[1, ...])
+                else:
+                    raise TypeError(snr_mode)
+        if snr_mode == 'max':
+            t = np.array(t)
+            sn = np.array(sn)
+            az = np.array(az)
+            el = np.array(el)
+        elif snr_mode in ['all', 'optimal']:
+            t = np.concatenate(t)
+            sn = np.concatenate(sn)
+            az = np.concatenate(az)
+            el = np.concatenate(el)
 
         t_sort = np.argsort(t)
         t = t[t_sort]
         sn = sn[t_sort]
+        az = az[t_sort]
+        el = el[t_sort]
+
+        if snr_mode == 'optimal':
+            t_optimize = np.arange(t[0], t[-1] + optimal_dt, optimal_dt, dtype=np.float64)
+            t_new = np.empty_like(t_optimize)
+            sn_new = np.empty_like(t_optimize)
+            az_new = np.empty_like(t_optimize)
+            el_new = np.empty_like(t_optimize)
+            for ind in range(len(t_optimize) - 1):
+                selector = np.logical_and(t >= t_optimize[ind], t <= t_optimize[ind+1])
+                if np.any(selector):
+                    sn_max = np.argmax(sn[selector])
+                    t_new[ind] = t[selector][sn_max]
+                    sn_new[ind] = sn[selector][sn_max]
+                    az_new[ind] = az[selector][sn_max]
+                    el_new[ind] = el[selector][sn_max]
+                else:
+                    t_new[ind] = np.nan
+                    sn_new[ind] = np.nan
+                    az_new[ind] = np.nan
+                    el_new[ind] = np.nan
+
+            t = t_new
+            sn = sn_new
+            az = az_new
+            el = el_new
 
         if obs_epoch is None:
             _t = t/3600.0
@@ -50,9 +99,13 @@ def orbit_sampling(radar, orbit_samples_data, obs_epoch=None, figsize=None):
         axes[rxi-1][0].set_ylabel('Orbit sample SNR [dB]')
         axes[rxi-1][0].set_xlabel('Time past epoch [h]')
 
-        axes[rxi-1][1].plot(_t, el, '.b')
-        axes[rxi-1][1].set_ylabel('Elevation [deg]')
+        axes[rxi-1][1].plot(_t, az, '.b')
+        axes[rxi-1][1].set_ylabel('Azimuth [deg]')
         axes[rxi-1][1].set_xlabel('Time past epoch [h]')
+
+        axes[rxi-1][2].plot(_t, el, '.b')
+        axes[rxi-1][2].set_ylabel('Elevation [deg]')
+        axes[rxi-1][2].set_xlabel('Time past epoch [h]')
 
     return fig_orb, axes
 
