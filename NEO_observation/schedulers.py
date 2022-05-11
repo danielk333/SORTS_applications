@@ -1,15 +1,19 @@
 #!/usr/bin/env python
 
-import logging
-
 import numpy as np
 import sorts
 
+
 class TrackingScheduler(
-        sorts.scheduler.StaticList, 
-        sorts.scheduler.ObservedParameters,
-    ):
-    def __init__(self, radar, t, states, track_len=3600.0, profiler=None, logger=None, **kwargs):
+                sorts.scheduler.StaticList, 
+                sorts.scheduler.ObservedParameters,
+            ):
+
+    def __init__(
+                    self, radar, t, states, 
+                    track_len=3600.0, profiler=None, logger=None, 
+                    **kwargs
+                ):
         self.passes = radar.find_passes(t, states)
         passes = sorts.passes.group_passes(self.passes)
 
