@@ -33,6 +33,7 @@ python main.py -s 10000.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_esr" \
 import pathlib
 import argparse
 import sys
+import pickle
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -67,8 +68,8 @@ if __name__ == '__main__':
         help='The JPL Kernel used for solar-system simulation',
     )
     parser.add_argument(
-        'figure_output', type=str, 
-        help='Path to output figures',
+        'output', type=str, 
+        help='Path to output figures and data',
     )
     parser.add_argument(
         '--time_step', type=float, default=3600.0, 
@@ -114,8 +115,8 @@ if __name__ == '__main__':
 
     kernel = pathlib.Path(args.kernel)
 
-    figure_output = pathlib.Path(args.figure_output)
-    figure_output.mkdir(parents=True, exist_ok=True)
+    output_path = pathlib.Path(args.output)
+    output_path.mkdir(parents=True, exist_ok=True)
 
     assert kernel.is_file(), 'Kernel does not exist'
 
@@ -199,6 +200,7 @@ if __name__ == '__main__':
         interpolator=interpolator, 
         snr_limit=False,
         extended_meta=False,
+        blind_ranges=False,
     )
 
     # plot results
@@ -267,9 +269,14 @@ if __name__ == '__main__':
     ax.set_xlabel('Time since epoch [d]')
     ax.set_ylabel('Distance from Earth [LD]')
 
-    fig1.savefig(figure_output / 'results.png')
-    fig3.savefig(figure_output / '3d_obs.png')
-    fig4.savefig(figure_output / 'earth_distance.png')
+    fig1.savefig(output_path / 'results.png')
+    fig3.savefig(output_path / '3d_obs.png')
+    fig4.savefig(output_path / 'earth_distance.png')
 
-    with open(figure_output / 'cmd.txt', 'w') as fh:
+    with open(output_path / 'cmd.txt', 'w') as fh:
         fh.write(" ".join(sys.argv))
+
+    with open(output_path / 'observation_data.pickle', 'wb') as fh:
+        pickle.dump(data, fh)
+    np.save(output_path / 'target_states_ITRS.npy', states)
+    np.save(output_path / 'solarsystem_states_ITRS.npy', massive_states)
