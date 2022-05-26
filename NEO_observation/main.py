@@ -42,6 +42,10 @@ from astroquery.jplhorizons import Horizons
 
 import sorts
 import pyorb
+import pyant
+
+cmap_name = 'vibrant'
+color_cycle = sorts.plotting.colors.get_cycle(cmap_name)
 
 from schedulers import TrackingScheduler
 
@@ -203,51 +207,52 @@ if __name__ == '__main__':
         blind_ranges=False,
     )
 
+    # just one pair
+    data = data[0][0]
+
     # plot results
-    fig1 = plt.figure(figsize=(15, 15))
-    axes = [
-        fig1.add_subplot(131),
-    ]
-    r_axes = [
-        fig1.add_subplot(132),
-    ]
-    sn_axes = [
-        fig1.add_subplot(133),
-    ]
+    fig1, axes = plt.subplots(2, 2, figsize=(15, 15))
 
-    for tx_d in data:
-        for rxi, rx_d in enumerate(tx_d):
-            for dati, dat in enumerate(rx_d):
-                axes[rxi].plot(
-                    dat['tx_k'][0, :], dat['tx_k'][1, :], 
-                    label=f'Pass {dati}',
-                )
-                sn_axes[rxi].plot(
-                    (dat['t'] - np.min(dat['t']))/(3600.0*24), 
-                    10*np.log10(dat['snr']), label=f'Pass {dati}',
-                )
-                r_axes[rxi].plot(
-                    (dat['t'] - np.min(dat['t']))/(3600.0*24), 
-                    (dat['range']*0.5)/LD, 
-                    label=f'Pass {dati}',
-                )
+    for ax in axes.flatten():
+        ax.set_prop_cycle(color_cycle)
 
-    axes[0].legend()
-    for rxi, ax in enumerate(axes):
-        ax.set_xlabel('k_x [East]')
-        ax.set_ylabel('k_y [North]')
-        ax.set_title(f'Receiver station {rxi}')
+    for dati, dat in enumerate(data):
+        axes[1, 0].plot(
+            dat['tx_k'][0, :], dat['tx_k'][1, :], 
+            label=f'Pass {dati}',
+        )
+        azelr = pyant.coordinates.cart_to_sph(dat['tx_k'])
+        axes[1, 1].plot(
+            (dat['t'] - np.min(dat['t']))/(3600.0*24), azelr[1, :], 
+            label=f'Pass {dati}',
+        )
+        axes[0, 0].plot(
+            (dat['t'] - np.min(dat['t']))/(3600.0*24), 
+            10*np.log10(dat['snr']), label=f'Pass {dati}',
+        )
+        axes[0, 1].plot(
+            (dat['t'] - np.min(dat['t']))/(3600.0*24), 
+            (dat['range']*0.5)/LD, 
+            label=f'Pass {dati}',
+        )
 
-    for rxi, ax in enumerate(sn_axes):
-        ax.set_xlabel('Time during pass [d]')
-        ax.set_ylabel('SNR [dB/h]')
-        ax.set_title(f'Receiver station {rxi}')
+    axes[0, 1].legend()
 
-    r_axes[0].legend()
-    for rxi, ax in enumerate(r_axes):
-        ax.set_xlabel('Time during pass [d]')
-        ax.set_ylabel('Range [LD]')
-        ax.set_title(f'Receiver station {rxi}')
+    axes[1, 0].set_xlabel('k_x [East]')
+    axes[1, 0].set_ylabel('k_y [North]')
+    axes[1, 0].set_title('Wave vector DOA')
+
+    axes[0, 0].set_xlabel('Time during pass [d]')
+    axes[0, 0].set_ylabel('SNR [dB/h]')
+    axes[0, 0].set_title('Passage signal strength')
+
+    axes[0, 1].set_xlabel('Time during pass [d]')
+    axes[0, 1].set_ylabel('Range [LD]')
+    axes[0, 1].set_title(f'Range to target')
+
+    axes[1, 1].set_xlabel('Time during pass [d]')
+    axes[1, 1].set_ylabel('Elevation [deg]')
+    axes[1, 1].set_title(f'Elevation of target')
 
     # plot results
     fig3 = plt.figure(figsize=(15, 15))
