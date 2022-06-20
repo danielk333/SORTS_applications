@@ -12,19 +12,19 @@ python main.py -s 86.4 -g 0.14 "2004 MN4" "eiscat_uhf" "2029-04-09T00:00:00" 8.0
 python main.py -s 10000.0 -g 0.14 "1994 PC1" "eiscat_uhf" "2022-01-14T00:00:00" 8.0 \
     "/home/danielk/data/jpl_eph/de430_plus_MarsPC.bsp" "./results/1994_PC1/"
 
-python main.py --full-fov -s 10000.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_uhf" \
+python main.py --full-fov -s 14400.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_uhf" \
     "2022-12-15T00:00:00" 20.0 \
     "/home/danielk/data/jpl_eph/de430_plus_MarsPC.bsp" \
-    "./results/2010_XC15_uhf_nofov/"
-python main.py -s 10000.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_uhf" \
+    "./results/2010_XC15_uhf_full_fow/"
+python main.py -s 14400.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_uhf" \
     "2022-12-15T00:00:00" 20.0 \
     "/home/danielk/data/jpl_eph/de430_plus_MarsPC.bsp" \
     "./results/2010_XC15_uhf/"
-python main.py --full-fov -s 10000.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_esr" \
+python main.py --full-fov -s 14400.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_esr" \
     "2022-12-15T00:00:00" 20.0 \
     "/home/danielk/data/jpl_eph/de430_plus_MarsPC.bsp" \
-    "./results/2010_XC15_esr_nofov/"
-python main.py -s 10000.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_esr" \
+    "./results/2010_XC15_esr_full_fow/"
+python main.py -s 14400.0 -g 0.14 --stations 0 0 "2010 XC15" "eiscat_esr" \
     "2022-12-15T00:00:00" 20.0 \
     "/home/danielk/data/jpl_eph/de430_plus_MarsPC.bsp" \
     "./results/2010_XC15_esr/"
