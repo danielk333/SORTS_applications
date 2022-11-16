@@ -16,6 +16,7 @@ import h5py
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
+from tqdm import tqdm
 from astropy.time import Time, TimeDelta
 
 import sorts
@@ -82,6 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--plot', type=str, default='', help='Plot results')
     parser.add_argument('--time-series', type=str, default='', help='Time series cache (npz format)')
     parser.add_argument('-c', '--clobber', action='store_true', help='Override output')
+    parser.add_argument('-f', '--format', type=str, default='png', help='Plot format, default is png')
 
     args = parser.parse_args()
 
@@ -134,6 +136,10 @@ if __name__ == '__main__':
         t = dat['t']
         d_earth = dat['d_earth']
 
+        if args.samples < states_prop.shape[2]:
+            states_prop = states_prop[:, :, 0:args.samples]
+            d_earth = d_earth[:, 0:args.samples]
+
     out_file = pathlib.Path(args.output)
     if not out_file.is_file() or args.clobber:
         states_end = np.squeeze(states_prop[:, -1, :])
@@ -178,8 +184,8 @@ if __name__ == '__main__':
         plt.rc('text', usetex=True)
 
         axis_labels = [
-            "$a$ [AU]", "$e$ [1]", "$i$ [deg]", 
-            "$\\omega$ [deg]", "$\\Omega$ [deg]", "$\\nu$ [deg]"
+            "Semi-major\\\\axis [AU]", "Eccentricity", "Inclination [deg]", 
+            "Argument of\\\\periapsis [deg]", "Longitude of\\\\ascending node [deg]", "True anomaly [deg]"
         ]
         scale = [1/pyorb.AU] + [1]*5
 
@@ -193,7 +199,9 @@ if __name__ == '__main__':
                 ax.ticklabel_format(axis='x', useOffset=False)
         fig.suptitle(f'Elements at pre-encounter {t[-1]/3600} h')
 
-        fig.savefig(plot_path / 'final_kepler.png')
+        fig.savefig(plot_path / f'final_kepler.{args.format}')
+        plt.close(fig)
+        print(plot_path / f'final_kepler.{args.format}', ': saved')
 
         fig, ax = plt.subplots(figsize=(8, 8))
         for ind in range(args.samples):
@@ -202,31 +210,40 @@ if __name__ == '__main__':
         ax.set_xlabel('Time [h]')
         ax.set_ylabel('Distance from Earth [AU]')
 
-        fig.savefig(plot_path / 'earth_distance.png')
+        fig.savefig(plot_path / f'earth_distance.{args.format}')
+        plt.close(fig)
+        print(plot_path / f'earth_distance.{args.format}', ': saved')
 
         with h5py.File(out_file, 'a') as h:
             if 'all_kepler' not in h or args.clobber:
+                print('Calculating Kepler...')
                 orb_t = pyorb.Orbit(
                     M0=pyorb.M_sol,
-                    direct_update=True,
-                    auto_update=True,
+                    direct_update=False,
+                    auto_update=False,
                     degrees=True,
                     num=args.samples*len(t),
                 )
                 t_mat = np.tile(t.reshape((len(t), 1)), (1, args.samples))
                 tv = epoch + TimeDelta(t_mat.reshape((args.samples*len(t),)), format='sec')
-                orb_t.cartesian = sorts.frames.convert(
-                    tv,
-                    states_prop.reshape((6, args.samples*len(t))), 
-                    in_frame = 'HCRS', 
-                    out_frame = 'HeliocentricMeanEcliptic',
-                )
-                all_kepler = orb_t.kepler.reshape((6, len(t), args.samples))
+                states_prop = states_prop.reshape((6, args.samples*len(t)))
+                for sind in tqdm(range(len(t))):
+                    orb_t._cart[:, (sind*args.samples):((sind+1)*args.samples)] = sorts.frames.convert(
+                        tv[(sind*args.samples):((sind+1)*args.samples)],
+                        states_prop[:, (sind*args.samples):((sind+1)*args.samples)], 
+                        in_frame = 'HCRS', 
+                        out_frame = 'HeliocentricMeanEcliptic',
+                    )
+                orb_t.calculate_kepler()
+                all_kepler = orb_t._kep
                 del orb_t
+                all_kepler = all_kepler.reshape((6, len(t), args.samples))
+                del states_prop
                 if 'all_kepler' in h:
                     del h['all_kepler']
                 h.create_dataset('all_kepler', data=all_kepler)
             else:
+                del states_prop
                 with h5py.File(out_file, 'r') as h:
                     all_kepler = h['all_kepler'][()]
 
@@ -234,7 +251,7 @@ if __name__ == '__main__':
 
         all_kepler[0, :, :] = 1.0/(all_kepler[0, :, :]/pyorb.AU)
         scale[0] = 1.0
-        axis_labels[0] = "$a^{-1}$ [AU$^{-1}$]"
+        axis_labels[0] = "Semi-major\\\\axis$^{-1}$ [AU$^{-1}$]"
 
         fig, axes = plt.subplots(2, 3, figsize=(15, 15))
         axes = axes.flatten()
@@ -249,7 +266,7 @@ if __name__ == '__main__':
             for b in bins
         ]
 
-        time_kep = np.empty((6, len(t), histogram_bins), dtype=states_prop.dtype)
+        time_kep = np.empty((6, len(t), histogram_bins), dtype=all_kepler.dtype)
 
         for ind in range(len(t)):
             for dim in range(6):
@@ -273,7 +290,7 @@ if __name__ == '__main__':
             axes[dim].set_xticklabels(new_locs)
             if dim in [2, 5]:
                 cb = fig.colorbar(cs, ax=axes[dim])
-                cb.set_label('Probability [1]')
+                cb.set_label('Probability')
             if dim == 4:
                 axes[dim].ticklabel_format(axis='y', useOffset=False)
 
@@ -284,6 +301,7 @@ if __name__ == '__main__':
             axes[dim].set_ylabel(axis_labels[dim])
         fig.suptitle('Propagation to pre-encounter elements')
 
-        fig.savefig(plot_path / 'kepler_vs_t.png')
+        fig.savefig(plot_path / f'kepler_vs_t.{args.format}')
+        print(plot_path / f'kepler_vs_t.{args.format}', ': saved')
 
         plt.show()
