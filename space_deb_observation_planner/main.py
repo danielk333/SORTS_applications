@@ -153,6 +153,7 @@ def run_object_planner(args, config, cores, radar, output, CACHE, profiler=None)
         fig1, fig2 = plotting.observed_pass_data(
             scheduler.radar, 
             tracking_data, 
+            time_unit='min',
             obs_epoch=obs_epoch, 
             figsize=figsize,
         )

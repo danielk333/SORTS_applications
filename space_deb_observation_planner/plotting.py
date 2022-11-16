@@ -275,7 +275,7 @@ def animate_fragments(t, fragment_states, output_anim, cores=0):
         logger.info('Could not create movie from animation frames... probably ffmpeg is missing')
 
 
-def observed_pass_data(radar, data, obs_epoch=None, figsize=None):
+def observed_pass_data(radar, data, time_unit='min', obs_epoch=None, figsize=None):
 
     # plot results
     fig1 = plt.figure(figsize=figsize)
@@ -287,6 +287,13 @@ def observed_pass_data(radar, data, obs_epoch=None, figsize=None):
         axes.append(fig1.add_subplot(2, len(radar.rx), ind))
         r_axes.append(fig1.add_subplot(2, len(radar.rx), len(radar.rx) + ind))
         sn_axes.append(fig2.add_subplot(1, len(radar.rx), ind))
+
+    tc = {
+        's': 1.0,
+        'min': 60.0,
+        'h': 3600.0,
+        'd': 3600.0*24,
+    }
 
     for tx_d in data:
         for rxi, rx_d in enumerate(tx_d):
@@ -300,12 +307,12 @@ def observed_pass_data(radar, data, obs_epoch=None, figsize=None):
                     legend = f'Pass {dati} - Start: {start_epoch.iso}'
 
                 sn_axes[rxi].plot(
-                    (dat['t'] - np.min(dat['t']))/(3600.0*24), 
+                    (dat['t'] - np.min(dat['t']))/tc[time_unit], 
                     10*np.log10(dat['snr']),
                     label=legend,
                 )
                 r_axes[rxi].plot(
-                    (dat['t'] - np.min(dat['t']))/(3600.0*24), 
+                    (dat['t'] - np.min(dat['t']))/tc[time_unit], 
                     (dat['range']*0.5)*1e-3,
                     label=legend,
                 )
@@ -320,13 +327,13 @@ def observed_pass_data(radar, data, obs_epoch=None, figsize=None):
     
     sn_axes[0].legend()
     for rxi, ax in enumerate(sn_axes):
-        ax.set_xlabel('Time during pass [d]')
-        ax.set_ylabel('SNR [dB/h]')
+        ax.set_xlabel(f'Time during pass [{time_unit}]')
+        ax.set_ylabel('SNR [dB/interval]')
         ax.set_title(f'Receiver station {rxi}')
 
     r_axes[0].legend()
     for rxi, ax in enumerate(r_axes):
-        ax.set_xlabel('Time during pass [d]')
+        ax.set_xlabel(f'Time during pass [{time_unit}]')
         ax.set_ylabel('Range [km]')
         ax.set_title(f'Receiver station {rxi}')
 
