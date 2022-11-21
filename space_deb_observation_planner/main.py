@@ -16,6 +16,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.dates as mdates
 from astropy.time import Time, TimeDelta
 
 import sorts
@@ -371,6 +372,38 @@ def run_orbit_planner(args, config, cores, radar, output, CACHE, profiler=None):
 
         fig_orb, axes = plotting.orbit_sampling(_radar, orbit_samples_data, snr_mode='optimal', figsize=figsize)
         fig_orb.savefig(orbit_output / f'{file_modifier}orbit_sampling_best_snr.png')
+
+        color_set = sorts.plotting.colors.get_cset('muted')
+
+        _t, sn, az, el = plotting.publish_orbit_sampling(_radar, orbit_samples_data, obs_epoch=obs_epoch)
+        fig_orb, axes = plt.subplots(2, len(_radar.rx), figsize=figsize, sharex=True)
+        axes = axes.T.reshape((len(radar.rx), 2))
+        for rxi in range(len(_radar.rx)):
+            axes[rxi-1][0].plot(_t, 10*np.log10(sn), '-k')
+            axes[rxi-1][0].set_ylabel('SNR [dB]')
+
+            snm = np.argmax(sn)
+            axes[rxi-1][0].axvline(_t[snm], color=color_set.wine)
+
+            axes[rxi-1][1].plot(_t, az, '-', color=color_set.purple)
+            axes[rxi-1][1].tick_params(axis='y', labelcolor=color_set.purple)
+            axes[rxi-1][1].set_ylabel('Azimuth [deg]', color=color_set.purple)
+
+            ax2 = axes[rxi-1][1].twinx()
+            ax2.set_ylabel('Elevation [deg]', color=color_set.green)  # we already handled the x-label with ax1
+            ax2.plot(_t, el, '-.', color=color_set.green)
+            ax2.tick_params(axis='y', labelcolor=color_set.green)
+            
+            axes[rxi-1][1].axvline(_t[snm], color=color_set.wine, label='Peak SNR')
+            axes[rxi-1][1].xaxis.set_major_formatter(mdates.DateFormatter('%b-%d %H:%M'))
+            axes[rxi-1][1].locator_params(axis='x', nbins=5)
+            axes[rxi-1][1].grid(True)
+        
+        fig_orb.suptitle('Orbit max SNR prediction')
+        fig_orb.autofmt_xdate()
+
+        fig_orb.savefig(orbit_output / f'{file_modifier}orbit_max_snr_epoch.png')
+
 
 
 def get_base_object(config, args):

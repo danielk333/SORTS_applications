@@ -19,14 +19,9 @@ def orbit_sampling(radar, orbit_samples_data, snr_mode='max', obs_epoch=None, fi
     txi = 0
     optimal_dt = 3*10.0  # sec
 
-    fig_orb = plt.figure(figsize=figsize)
-    axes = []
+    fig_orb, axes = plt.subplots(3, len(radar.rx), figsize=figsize, sharex=True)
+    axes = axes.T.reshape((len(radar.rx), 3))
     for rxi in range(1, len(radar.rx)+1):
-        axes.append([])
-        axes[rxi-1].append(fig_orb.add_subplot(3, len(radar.rx), 0*len(radar.rx)+rxi))
-        axes[rxi-1].append(fig_orb.add_subplot(3, len(radar.rx), 1*len(radar.rx)+rxi))
-        axes[rxi-1].append(fig_orb.add_subplot(3, len(radar.rx), 2*len(radar.rx)+rxi))
-
         t = []
         sn = []
         az = []
@@ -108,6 +103,47 @@ def orbit_sampling(radar, orbit_samples_data, snr_mode='max', obs_epoch=None, fi
         axes[rxi-1][2].set_xlabel('Time past epoch [h]')
 
     return fig_orb, axes
+
+
+
+def publish_orbit_sampling(radar, orbit_samples_data, obs_epoch=None):
+
+    txi = 0
+    optimal_dt = 3*10.0  # sec
+
+    for rxi in range(1, len(radar.rx)+1):
+        t = []
+        sn = []
+        az = []
+        el = []
+        for oid in range(len(orbit_samples_data)):
+            for ind, d in enumerate(orbit_samples_data[oid][txi][rxi-1]):
+                snm = np.argmax(d['snr'])
+                sn.append(d['snr'][snm])
+                t.append(d['t'][snm])
+                azel = pyant.coordinates.cart_to_sph(d['rx_k'][:, snm], radians=False)
+                az.append(azel[0])
+                el.append(azel[1])
+
+        t = np.array(t)
+        sn = np.array(sn)
+        az = np.array(az)
+        el = np.array(el)
+
+        t_sort = np.argsort(t)
+        t = t[t_sort]
+        sn = sn[t_sort]
+        az = az[t_sort]
+        el = el[t_sort]
+
+        if obs_epoch is None:
+            _t = t/3600.0
+        else:
+            _t = (obs_epoch + TimeDelta(t, format='sec')).datetime
+
+    return _t, sn, az, el
+
+
 
 
 def fragment_stats(radar, fragment_pass_data, obs_epoch=None, figsize=None):
