@@ -32,13 +32,13 @@ def orbit_sampling(radar, orbit_samples_data, snr_mode='max', obs_epoch=None, fi
                     snm = np.argmax(d['snr'])
                     sn.append(d['snr'][snm])
                     t.append(d['t'][snm])
-                    azel = pyant.coordinates.cart_to_sph(d['rx_k'][:, snm], radians=False)
+                    azel = pyant.coordinates.cart_to_sph(d['rx_k'][:, snm], degrees=True)
                     az.append(azel[0])
                     el.append(azel[1])
                 elif snr_mode in ['all', 'optimal']:
                     sn.append(d['snr'].copy())
                     t.append(d['t'].copy())
-                    azel = pyant.coordinates.cart_to_sph(d['rx_k'], radians=False)
+                    azel = pyant.coordinates.cart_to_sph(d['rx_k'], degrees=True)
                     az.append(azel[0, ...])
                     el.append(azel[1, ...])
                 else:
@@ -121,7 +121,7 @@ def publish_orbit_sampling(radar, orbit_samples_data, obs_epoch=None):
                 snm = np.argmax(d['snr'])
                 sn.append(d['snr'][snm])
                 t.append(d['t'][snm])
-                azel = pyant.coordinates.cart_to_sph(d['rx_k'][:, snm], radians=False)
+                azel = pyant.coordinates.cart_to_sph(d['rx_k'][:, snm], degrees=True)
                 az.append(azel[0])
                 el.append(azel[1])
 

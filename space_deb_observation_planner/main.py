@@ -68,6 +68,8 @@ def run_passes_planner(args, config, cores, radar, output, CACHE, profiler=None)
     out_data_txt = ''
 
     fig, axes = plt.subplots(len(radar.tx), len(radar.rx))
+    if len(radar.tx) == 1 and len(radar.rx) == 1:
+        axes = np.array([axes])
     axes.shape = (len(radar.tx), len(radar.rx))
 
     for txi in range(len(radar.tx)):
@@ -609,7 +611,7 @@ if __name__ == '__main__':
         help='Type of target for observation',
     )
     parser.add_argument('--txi', type=int, default=[0], nargs='?', help='TX indecies to use')
-    parser.add_argument('--rxi', type=int, default=[0], nargs='?', help='TX indecies to use')
+    parser.add_argument('--rxi', type=int, default=[0], nargs='?', help='RX indecies to use')
 
     args = parser.parse_args()
 
