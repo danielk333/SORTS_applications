@@ -1,0 +1,5 @@
+sgp4 >= 2.23
+h5py
+scipy
+astropy >= 6.1.0
+matplotlib
