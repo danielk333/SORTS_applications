@@ -98,4 +98,6 @@ ax.axis(
         ]
     )
 )
+ax.view_init(6, 25)
+
 plt.show()
