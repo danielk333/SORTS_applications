@@ -5,9 +5,9 @@ import geopandas as gpd
 from pathlib import Path
 
 import sorts
+import pyant.coordinates as coord
 
 radar = sorts.radars.nostra
-
 
 plt.style.use("dark_background")
 
@@ -16,9 +16,9 @@ gpkd_geo_datas = [
     Path("/home/danielk/data/gpkg/gadm41_SWE.gpkg"),
     Path("/home/danielk/data/gpkg/gadm41_FIN.gpkg"),
 ]
-shp_geo_datas = [
-    # Path("/home/danielk/data/natural_earth/ne_50m_land/ne_50m_land.shp"),
-]
+
+G_ROT = coord.rot_mat_y(-11, degrees=True) @ coord.rot_mat_z(-11, degrees=True)
+# G_ROT = np.eye(3)
 
 countries_itrs = []
 for geo_data in gpkd_geo_datas:
@@ -29,23 +29,6 @@ for geo_data in gpkd_geo_datas:
         xx, yy = poly.exterior.coords.xy
         c_itrs = sorts.frames.geodetic_to_ITRS(yy, xx, np.zeros_like(xx), degrees=True)
         countries_itrs.append(c_itrs)
-
-for geo_data in shp_geo_datas:
-    print("loading ", geo_data)
-    data_gdf = gpd.read_file(geo_data)
-
-    for i in data_gdf.index:
-        polys = data_gdf.loc[i].geometry
-
-        if polys.geom_type == "Polygon":
-            xx, yy = polys.exterior.coords.xy
-            c_itrs = sorts.frames.geodetic_to_ITRS(yy, xx, np.zeros_like(xx), degrees=True)
-            countries_itrs.append(c_itrs)
-        elif polys.geom_type == "MultiPolygon":
-            for poly in polys.geoms:
-                xx, yy = poly.exterior.coords.xy
-                c_itrs = sorts.frames.geodetic_to_ITRS(yy, xx, np.zeros_like(xx), degrees=True)
-
 
 poptions = dict(
     settings=dict(
@@ -80,7 +63,7 @@ send_range = 2000e3
 scan_ranges = np.linspace(300e3, 2000e3, 100)
 plot_range = 700e3
 
-fig = plt.figure(figsize=(15, 15))
+fig = plt.figure(figsize=(3*3, 4*3))
 ax = fig.add_subplot(111, projection="3d")
 
 tx_pts = [
@@ -96,61 +79,88 @@ for tx_ind, ps_ind in tx_pts:
         (tx_ind, ps_ind, ecef_rel_p/np.linalg.norm(ecef_rel_p))
     )
 
+G_states = G_ROT @ states[:3, :]
+
 for tx_ind, ps_ind, point in points:
     tx = radar.tx[tx_ind]
-    ax.plot(tx.ecef[0], tx.ecef[1], tx.ecef[2], "or")
+    txecef = G_ROT @ tx.ecef
+    ax.plot(txecef[0], txecef[1], txecef[2], "or")
     send_point = tx.ecef + point * send_range
+    send_point = G_ROT @ send_point
     ax.plot(
-        [tx.ecef[0], send_point[0]],
-        [tx.ecef[1], send_point[1]],
-        [tx.ecef[2], send_point[2]],
+        [txecef[0], send_point[0]],
+        [txecef[1], send_point[1]],
+        [txecef[2], send_point[2]],
         "r-",
         lw=2,
     )
     ax.plot(
-        [states[0, ps_ind]],
-        [states[1, ps_ind]],
-        [states[2, ps_ind]],
+        [G_states[0, ps_ind]],
+        [G_states[1, ps_ind]],
+        [G_states[2, ps_ind]],
         "or",
         markersize=10,
     )
     for rx_ind, rx in enumerate(radar.rx):
         if (tx_ind, rx_ind) in radar.joint_stations:
             continue
+        rxecef = G_ROT @ rx.ecef
         scan_point = tx.ecef[:, None] + point[:, None] * scan_ranges[None, :]
+        scan_point = G_ROT @ scan_point
         for i in range(scan_point.shape[1]):
             ax.plot(
-                [rx.ecef[0], scan_point[0, i]],
-                [rx.ecef[1], scan_point[1, i]],
-                [rx.ecef[2], scan_point[2, i]],
+                [rxecef[0], scan_point[0, i]],
+                [rxecef[1], scan_point[1, i]],
+                [rxecef[2], scan_point[2, i]],
                 "g-",
                 lw=1,
                 alpha=0.3,
             )
 
 for ps in passes:
-    ax.plot(states[0, ps.inds], states[1, ps.inds], states[2, ps.inds], ls="-", c="c")
+    ax.plot(
+        G_states[0, ps.inds],
+        G_states[1, ps.inds],
+        G_states[2, ps.inds],
+        ls="-", c="c",
+    )
 
 for citrs in countries_itrs:
-    ax.plot(citrs[0, :], citrs[1, :], citrs[2, :], ls="-", c="w")
+    citrs = G_ROT @ citrs
+    ax.plot(
+        citrs[0, :],
+        citrs[1, :],
+        citrs[2, :],
+        ls="-", c="w",
+    )
 
-ax.grid(visible=False)
-ax.axis(False)
+# ax.grid(visible=False)
+# ax.axis(False)
 ax.axis(
     np.array(
         [
-            rx.ecef[0] - plot_range,
-            rx.ecef[0] + plot_range,
-            rx.ecef[1] - plot_range,
-            rx.ecef[1] + plot_range,
-            rx.ecef[2] - plot_range,
-            rx.ecef[2] + plot_range,
+            rxecef[0] - plot_range,
+            rxecef[0] + plot_range,
+            rxecef[1] - plot_range,
+            rxecef[1] + plot_range,
+            rxecef[2] - plot_range,
+            rxecef[2] + plot_range,
         ]
     )
 )
-# ax.view_init(6, 25)
-ax.view_init(11, 11)
+# ax.view_init(11, 11)
 
-fig.savefig("nostra_still.png", dpi=300)
-plt.savefig("nostra_still.svg", format = 'svg', dpi=300)
+ax.view_init(0, 0)
+
+# ax.axis((
+#     1458796.2210443916, 2858796.2210443914,
+#     72668.25422213916, 1472668.2542221393,
+#     5515769.194599953, 6915769.194599953,
+# ))
+ax.set_box_aspect((4, 3, 4))
+
+fig.savefig("plots/nostra_still.jpg")
+fig.savefig("plots/nostra_still.png", dpi=300)
+plt.savefig("plots/nostra_still.svg", format = 'svg', dpi=300)
+
 plt.show()
